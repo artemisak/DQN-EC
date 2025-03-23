@@ -178,3 +178,4 @@ runs/
 wandb/
 
 .idea/
+.DS_Store
