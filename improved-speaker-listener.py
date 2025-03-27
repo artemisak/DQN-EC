@@ -124,9 +124,8 @@ class SpeakerQNetwork(nn.Module):
 # Listener observation space: [self_vel, all_landmark_rel_positions, communication]
 # Listener action space: [no_action, move_left, move_right, move_down, move_up]
 class ListenerQNetwork(nn.Module):
-    def __init__(self, obs_dim, action_dim, comm_dim=3):
+    def __init__(self, obs_dim, action_dim, comm_dim):
         super().__init__()
-        # Communication dimension is 3 (binary encoded say_0 to say_9)
         self.comm_dim = comm_dim
         self.other_dim = obs_dim - comm_dim
         
@@ -161,7 +160,7 @@ class ListenerQNetwork(nn.Module):
         for net in [self.comm_net, self.pos_vel_net, self.combined_net]:
             for layer in net:
                 if isinstance(layer, nn.Linear):
-                    nn.init.orthogonal_(layer.weight, gain=1.0)
+                    nn.init.orthogonal_(layer.weight, gain=np.sqrt(2))
                     nn.init.constant_(layer.bias, 0.0)
         
     def forward(self, x):
@@ -235,7 +234,7 @@ def main():
     listener_obs_dim = np.prod(env.observation_space(listener_agent).shape)
     listener_action_dim = env.action_space(listener_agent).n
     
-    # Communication dimension is 10 (based on speaker action space)
+    # Communication dimension is based on speaker action space
     comm_dim = speaker_action_dim
 
     print(f"Speaker obs dim: {speaker_obs_dim}, action dim: {speaker_action_dim}")
