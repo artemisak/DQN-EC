@@ -31,7 +31,7 @@ class SpeakerQNetwork(torch.nn.Module):
                 torch.nn.init.orthogonal_(layer.weight, gain=1.0)
                 torch.nn.init.constant_(layer.bias, 0.0)
         
-        torch.nn.init.orthogonal_(self.action_head.weight, gain=0.01)
+        torch.nn.init.orthogonal_(self.action_head.weight, gain=1.0)
         torch.nn.init.constant_(self.action_head.bias, 0.0)
 
     def forward(self, x):
@@ -84,7 +84,7 @@ class ListenerQNetwork(torch.nn.Module):
             if isinstance(layer, torch.nn.Linear):
                 if i == len(self.combined_net) - 1:
                     # Last layer with smaller weights
-                    torch.nn.init.orthogonal_(layer.weight, gain=0.01)
+                    torch.nn.init.orthogonal_(layer.weight, gain=1.0)
                 else:
                     torch.nn.init.orthogonal_(layer.weight, gain=1.0)
                 torch.nn.init.constant_(layer.bias, 0.0)
@@ -298,36 +298,6 @@ def evaluate():
         percentage = (message_counts[i] / message_counts.sum()) * 100 if message_counts.sum() > 0 else 0
         print(f"  Message {i}: {message_counts[i]} times ({percentage:.1f}%)")
     
-    # Visualize message distribution
-    plt.figure(figsize=(10, 6))
-    plt.bar(range(speaker_action_dim), message_counts)
-    plt.xlabel('Message ID')
-    plt.ylabel('Frequency')
-    plt.title('Message Usage Distribution')
-    plt.xticks(range(speaker_action_dim))
-    plt.savefig('message_distribution.png')
-    plt.close()
-    
-    # Visualize reward distribution
-    plt.figure(figsize=(10, 6))
-    plt.hist(rewards, bins=min(10, num_episodes))
-    plt.xlabel('Episode Reward')
-    plt.ylabel('Count')
-    plt.title('Reward Distribution')
-    plt.savefig('reward_distribution.png')
-    plt.close()
-    
-    # If we have distances, visualize them too
-    if distances:
-        plt.figure(figsize=(10, 6))
-        plt.hist(distances, bins=min(10, len(distances)))
-        plt.xlabel('Final Distance to Target')
-        plt.ylabel('Count')
-        plt.title('Distance Distribution')
-        plt.savefig('distance_distribution.png')
-        plt.close()
-        
-    print("Visualizations saved as PNG files.")
     env.close()
 
 

@@ -36,7 +36,7 @@ class ReplayBuffer:
 
 @dataclass
 class Args:
-    exp_name: str = "ma_dqn_speaker_listener_improved"
+    exp_name: str = "ma_dqn_speaker_listener"
     """the name of this experiment"""
     seed: int = 1
     """seed of the experiment"""
@@ -46,7 +46,7 @@ class Args:
     """if toggled, cuda will be enabled by default"""
     track: bool = True
     """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "ma_dqn_speaker_listener_improved"
+    wandb_project_name: str = "ma_dqn_speaker_listener"
     """the wandb's project name"""
     wandb_entity: Optional[str] = None
     """the entity (team) of wandb's project"""
@@ -60,17 +60,17 @@ class Args:
     """the user or org name of the model repository from the Hugging Face Hub"""
 
     # Algorithm specific arguments
-    total_timesteps: int = 80000
+    total_timesteps: int = 300000
     """total timesteps of the experiments"""
-    learning_rate: float = 1e-4
+    learning_rate: float = 1e-3
     """the learning rate of the optimizer"""
-    buffer_size: int = 50000
+    buffer_size: int = 51200
     """the replay memory buffer size"""
     gamma: float = 0.99
     """the discount factor gamma"""
-    tau: float = 0.005
+    tau: float = 0.1
     """the target network update rate"""
-    target_network_frequency: int = 200
+    target_network_frequency: int = 100
     """the timesteps it takes to update the target network"""
     batch_size: int = 256
     """the batch size of sample from the reply memory"""
@@ -80,9 +80,9 @@ class Args:
     """the ending epsilon for exploration"""
     exploration_fraction: float = 0.5
     """the fraction of `total-timesteps` it takes from start-e to go end-e"""
-    learning_starts: int = 5000
+    learning_starts: int = 5120
     """timestep to start learning"""
-    train_frequency: int = 4
+    train_frequency: int = 5
     """the frequency of training"""
 
 
@@ -110,11 +110,9 @@ class SpeakerQNetwork(nn.Module):
         """Initialize network weights for better stability"""
         for layer in self.feature_extractor:
             if isinstance(layer, nn.Linear):
-                nn.init.orthogonal_(layer.weight, gain=1.0)
+                nn.init.orthogonal_(layer.weight, gain=np.sqrt(2))
                 nn.init.constant_(layer.bias, 0.0)
-        
-        # Initialize the final layer with smaller weights for more exploration
-        nn.init.orthogonal_(self.action_head.weight, gain=0.01)
+        nn.init.orthogonal_(self.action_head.weight, gain=np.sqrt(2))
         nn.init.constant_(self.action_head.bias, 0.0)
 
     def forward(self, x):
@@ -126,9 +124,9 @@ class SpeakerQNetwork(nn.Module):
 # Listener observation space: [self_vel, all_landmark_rel_positions, communication]
 # Listener action space: [no_action, move_left, move_right, move_down, move_up]
 class ListenerQNetwork(nn.Module):
-    def __init__(self, obs_dim, action_dim, comm_dim=10):
+    def __init__(self, obs_dim, action_dim, comm_dim=3):
         super().__init__()
-        # Communication dimension is 10 (one-hot encoded say_0 to say_9)
+        # Communication dimension is 3 (binary encoded say_0 to say_9)
         self.comm_dim = comm_dim
         self.other_dim = obs_dim - comm_dim
         
@@ -160,22 +158,12 @@ class ListenerQNetwork(nn.Module):
 
     def _init_weights(self):
         """Initialize network weights for better stability"""
-        for net in [self.comm_net, self.pos_vel_net]:
+        for net in [self.comm_net, self.pos_vel_net, self.combined_net]:
             for layer in net:
                 if isinstance(layer, nn.Linear):
                     nn.init.orthogonal_(layer.weight, gain=1.0)
                     nn.init.constant_(layer.bias, 0.0)
         
-        # Initialize the final layers
-        for i, layer in enumerate(self.combined_net):
-            if isinstance(layer, nn.Linear):
-                if i == len(self.combined_net) - 1:
-                    # Last layer with smaller weights
-                    nn.init.orthogonal_(layer.weight, gain=0.01)
-                else:
-                    nn.init.orthogonal_(layer.weight, gain=1.0)
-                nn.init.constant_(layer.bias, 0.0)
-
     def forward(self, x):
         # Split observation into communication and position/velocity components
         comm = x[:, -self.comm_dim:]  # Last comm_dim elements are communication
@@ -424,7 +412,7 @@ def main():
                 speaker_optimizer.zero_grad()
                 speaker_loss.backward()
                 # Add gradient clipping for stability
-                torch.nn.utils.clip_grad_norm_(speaker_q_net.parameters(), max_norm=10.0)
+                torch.nn.utils.clip_grad_norm_(speaker_q_net.parameters(), max_norm=1.0)
                 speaker_optimizer.step()
 
                 # Log speaker metrics
@@ -465,7 +453,7 @@ def main():
                 listener_optimizer.zero_grad()
                 listener_loss.backward()
                 # Add gradient clipping for stability
-                torch.nn.utils.clip_grad_norm_(listener_q_net.parameters(), max_norm=10.0)
+                torch.nn.utils.clip_grad_norm_(listener_q_net.parameters(), max_norm=1.0)
                 listener_optimizer.step()
 
                 # Log listener metrics
