@@ -425,6 +425,7 @@ def main():
             "speaker_action_dim": speaker_action_dim,
             "listener_obs_dim": listener_obs_dim,
             "listener_action_dim": listener_action_dim,
+            "comm_dim": 0, # Added for compatibility
             "time": time.time()
         }
         np.save(f"models/{run_name}/metadata.npy", metadata)
