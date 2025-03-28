@@ -59,7 +59,7 @@ class Args:
     """the user or org name of the model repository from the Hugging Face Hub"""
 
     # Algorithm specific arguments
-    total_timesteps: int = 15000
+    total_timesteps: int = 300000
     """total timesteps of the experiments"""
     learning_rate: float = 1e-3
     """the learning rate of the optimizer"""
@@ -264,7 +264,7 @@ def main():
                     "listener_reward": rewards[listener_agent],
                     "global_step": global_step,
                     "epsilon": epsilon
-                })
+                }, step=global_step)
 
                 # Log action distributions every 10 episodes
                 if np.sum(speaker_actions_hist) > 0:
@@ -289,7 +289,7 @@ def main():
                             "action", "probability",
                             title="Listener Action Distribution"
                         )
-                    })
+                    }, step=global_step)
 
             # Reset episode metrics
             episode_reward = 0
@@ -339,7 +339,7 @@ def main():
                             "speaker_loss": speaker_loss.item(),
                             "speaker_q_values": current_q_values.mean().item(),
                             "global_step": global_step
-                        })
+                        }, step=global_step)
 
             # Train listener agent if enough samples
             if len(listener_buffer) >= args.batch_size:
@@ -376,7 +376,7 @@ def main():
                             "listener_loss": listener_loss.item(),
                             "listener_q_values": current_q_values.mean().item(),
                             "global_step": global_step
-                        })
+                        }, step=global_step)
 
             # Log general training metrics
             if global_step % 100 == 0:
@@ -400,7 +400,7 @@ def main():
                                 "reward", "episode_length",
                                 title="Communication Success vs Episode Length"
                             )
-                        })
+                        }, step=global_step)
 
         # Update target networks
         if global_step % args.target_network_frequency == 0:
