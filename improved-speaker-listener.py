@@ -10,7 +10,6 @@ import torch.nn.functional as F
 import torch.optim as optim
 import tyro
 from typing import Optional
-from torch.utils.tensorboard import SummaryWriter
 from collections import deque, namedtuple
 from pettingzoo.mpe import simple_speaker_listener_v4
 
@@ -70,7 +69,7 @@ class Args:
     """the discount factor gamma"""
     tau: float = 0.1
     """the target network update rate"""
-    target_network_frequency: int = 100
+    target_network_frequency: int = 50
     """the timesteps it takes to update the target network"""
     batch_size: int = 256
     """the batch size of sample from the reply memory"""
@@ -205,12 +204,6 @@ def main():
             save_code=True,
         )
 
-    writer = SummaryWriter(f"runs/{run_name}")
-    writer.add_text(
-        "hyperparameters",
-        "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
-    )
-
     # Seeding
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -327,11 +320,6 @@ def main():
         # Check if episode ended
         done = any(terminations.values()) or any(truncations.values())
         if done:
-            # Log episode metrics
-            writer.add_scalar("charts/episode_reward", episode_reward, global_step)
-            writer.add_scalar("charts/episode_length", episode_length, global_step)
-            writer.add_scalar("charts/speaker_reward", rewards[speaker_agent], global_step)
-            writer.add_scalar("charts/listener_reward", rewards[listener_agent], global_step)
 
             episode_rewards.append(episode_reward)
             episode_lengths.append(episode_length)
@@ -416,8 +404,6 @@ def main():
 
                 # Log speaker metrics
                 if global_step % 100 == 0:
-                    writer.add_scalar("losses/speaker_loss", speaker_loss.item(), global_step)
-                    writer.add_scalar("values/speaker_q_values", current_q_values.mean().item(), global_step)
 
                     if args.track:
                         wandb.log({
@@ -457,8 +443,6 @@ def main():
 
                 # Log listener metrics
                 if global_step % 100 == 0:
-                    writer.add_scalar("losses/listener_loss", listener_loss.item(), global_step)
-                    writer.add_scalar("values/listener_q_values", current_q_values.mean().item(), global_step)
 
                     if args.track:
                         wandb.log({
@@ -469,14 +453,11 @@ def main():
 
             # Log general training metrics
             if global_step % 100 == 0:
-                writer.add_scalar("charts/epsilon", epsilon, global_step)
-                writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
                 # Performance over time
                 if len(episode_rewards) > 0:
                     window_size = min(10, len(episode_rewards))
                     avg_reward = np.mean(episode_rewards[-window_size:])
-                    writer.add_scalar("charts/avg_reward_last_10", avg_reward, global_step)
 
                     if args.track:
                         wandb.log({
@@ -521,7 +502,7 @@ def main():
         np.save(f"models/{run_name}/metadata.npy", metadata)
 
     env.close()
-    writer.close()
+
     if args.track:
         wandb.finish()
 
