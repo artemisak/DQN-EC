@@ -4,11 +4,8 @@ import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
 import matplotlib.pyplot as plt
-import networkx as nx
-from scipy.spatial import distance
-import math
-from torch_geometric.nn import GCNConv, global_mean_pool
-from torch_geometric.data import Data, Batch
+from torch_geometric.nn import GCNConv
+from torch_geometric.data import Data
 
 # Set seed for reproducibility
 torch.manual_seed(42)
