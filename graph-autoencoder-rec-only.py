@@ -11,7 +11,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 class ImprovedGraphAutoEncoder(nn.Module):
-    def __init__(self, input_dim=3, hidden_dim=64, latent_dim=3):
+    def __init__(self, input_dim=3, hidden_dim=64):
         super(ImprovedGraphAutoEncoder, self).__init__()
 
         # Encoder MLP
@@ -20,24 +20,24 @@ class ImprovedGraphAutoEncoder(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, latent_dim)
+            nn.Linear(hidden_dim, input_dim)
         )
 
-        # GCN layers - Process ALL latent dimensions
-        self.gcn1 = GATv2Conv(in_channels=latent_dim, out_channels=hidden_dim, edge_dim=1)
-        self.gcn2 = GATv2Conv(in_channels=hidden_dim, out_channels=latent_dim, edge_dim=1)
+        # GCN layers
+        self.gcn1 = GATv2Conv(in_channels=-1, out_channels=hidden_dim, edge_dim=1)
+        self.gcn2 = GATv2Conv(in_channels=hidden_dim, out_channels=input_dim, edge_dim=1)
 
-        # Decoder MLP with increased capacity
+        # Decoder MLP
         self.decoder = nn.Sequential(
-            nn.Linear(latent_dim, hidden_dim),
+            nn.Linear(input_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, input_dim)
         )
 
-        # Skip connection layers
-        self.skip_connection = nn.Linear(latent_dim, latent_dim)
+        # Skip connection layer
+        self.skip_connection = nn.Linear(input_dim, input_dim)
 
     def preprocess(self, x):
         """
@@ -121,46 +121,41 @@ class ImprovedGraphAutoEncoder(nn.Module):
         for b in range(batch_size):
             # Step 2: Encode each (3) vector to latent vector
             sample_input = x_preprocessed[b]  # Shape: (8, 3)
-            latent = self.encoder(sample_input)  # Shape: (8, latent_dim)
+            latent = self.encoder(sample_input)  # Shape: (8, latent_dim=3)
 
-            # IMPORTANT: Store original latent for skip connection
-            original_latent = latent.clone()
-
-            # For visualization only - apply mild normalization that doesn't destroy information
+            # For graph construction only - apply mild normalization that doesn't destroy information
             # Center the latent points (important for proper scaling)
-            vis_latent = latent - torch.mean(latent, dim=0, keepdim=True)
+            graph_latent = latent - torch.mean(latent, dim=0, keepdim=True)
 
-            # Gentle scaling for visualization only - doesn't affect reconstruction path
-            std = torch.std(vis_latent, dim=0) + 1e-8
-            vis_latent = vis_latent / std.unsqueeze(0) * 1.0
+            # Gentle scaling for graph construction only - doesn't affect reconstruction path
+            std = torch.std(graph_latent, dim=0) + 1e-8
+            graph_latent = graph_latent / std.unsqueeze(0) * 1.0
 
-            # Use the visualization latent only for graph creation
-            edge_index, edge_attr = self.create_gabriel_graph(vis_latent)
+            # Use the graph construction latent only for graph creation
+            edge_index, edge_attr = self.create_gabriel_graph(graph_latent)
 
-            # IMPORTANT: Use ALL latent dimensions in the GCN (not just the 3rd)
             # Create PyTorch Geometric Data object with full latent space
-            data = Data(x=latent, edge_index=edge_index, edge_attr=edge_attr)
+            data = Data(x=latent[:, 2].reshape(-1, 1), edge_index=edge_index, edge_attr=edge_attr)
 
             # Step 4: Process with GCN
             x1 = F.relu(self.gcn1(data.x, data.edge_index, data.edge_attr))
             gcn_output = self.gcn2(x1, data.edge_index, data.edge_attr)
 
             # Add skip connection from encoder output
-            # This allows information to flow directly to the decoder
-            skip_processed = self.skip_connection(original_latent)
-            combined_features = gcn_output + skip_processed
+            skip_processed = self.skip_connection(latent)
+            combined_features = gcn_output + 0.1 * skip_processed
 
             # Step 5: Decode back to original space
             reconstructed = self.decoder(combined_features)  # Shape: (8, 3)
 
             # Store results
             reconstructed_list.append(reconstructed)
-            latent_list.append(vis_latent)  # Store visualization latent for display
+            latent_list.append(graph_latent)  # Store visualization latent for display
             edge_index_list.append(edge_index)
 
         # Stack results
         reconstructed_batch = torch.stack(reconstructed_list)  # Shape: (batch_size, 8, 3)
-        latent_batch = torch.stack(latent_list)  # Shape: (batch_size, 8, latent_dim)
+        latent_batch = torch.stack(latent_list)  # Shape: (batch_size, 8, latent_dim=3)
 
         return x_preprocessed, reconstructed_batch, latent_batch, edge_index_list
 
@@ -179,11 +174,7 @@ def improved_reconstruction_loss(original, reconstructed):
     dim1_loss = F.mse_loss(original[:, :, 1], reconstructed[:, :, 1])  # Position/index
     dim2_loss = F.mse_loss(original[:, :, 2], reconstructed[:, :, 2])  # Value
 
-    # Weight the dimensions differently if needed
-    # We care more about reconstructing values than agent types
-    weighted_loss = 0.5 * dim0_loss + 1.0 * dim1_loss + 2.0 * dim2_loss
-
-    return weighted_loss
+    return dim0_loss + dim1_loss + dim2_loss
 
 
 def train_model(model, dataloader, test_samples, epochs=100, lr=0.001):
