@@ -25,23 +25,20 @@ class ImprovedGraphAutoEncoder(nn.Module):
 
         # GCN layers
         self.gcn1 = GATv2Conv(in_channels=-1, out_channels=hidden_dim, edge_dim=1)
-        self.gcn2 = GATv2Conv(in_channels=hidden_dim, out_channels=input_dim, edge_dim=1)
-
-        # Decoder MLP
-        self.decoder = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, input_dim)
-        )
+        self.gcn2 = GATv2Conv(in_channels=hidden_dim, out_channels=hidden_dim, edge_dim=1)
+        self.gcn3 = GATv2Conv(in_channels=hidden_dim, out_channels=input_dim, edge_dim=1)
 
         # Skip connection layer
         self.skip_connection = nn.Linear(input_dim, input_dim)
 
+        # Learnable skip connection layer's threshold
+        self.skip_connection_alpha = nn.Sigmoid()
+
+        self.alpha = 0.1
+
     def preprocess(self, x):
         """
-        Transform (batch_size, 8) to (batch_size, 8, 3) where each vector is [agent_type, index, value]
+        Transform (32, 8) to (32, 8, 3) where each vector is [agent_type, index, value]
         """
         batch_size = x.size(0)
         preprocessed = torch.zeros(batch_size, 8, 3, device=x.device)
@@ -110,7 +107,7 @@ class ImprovedGraphAutoEncoder(nn.Module):
     def forward(self, x):
         batch_size = x.size(0)
 
-        # Step 1: Preprocess input from (batch_size, 8) to (batch_size, 8, 3)
+        # Preprocess input from (batch_size, 8) to (batch_size, 8, 3)
         x_preprocessed = self.preprocess(x)
 
         # Process each sample in the batch individually
@@ -119,57 +116,54 @@ class ImprovedGraphAutoEncoder(nn.Module):
         edge_index_list = []
 
         for b in range(batch_size):
-            # Step 2: Encode each (3) vector to latent vector
+            # Encode each (3) vector to latent vector
             sample_input = x_preprocessed[b]  # Shape: (8, 3)
-            latent = self.encoder(sample_input)  # Shape: (8, latent_dim=3)
+            latent = self.encoder(sample_input)  # Shape: (8, 3)
 
-            # For graph construction only - apply mild normalization that doesn't destroy information
-            # Center the latent points (important for proper scaling)
-            graph_latent = latent - torch.mean(latent, dim=0, keepdim=True)
+            # Normalization
+            # Center
+            mu = torch.mean(latent, dim=0, keepdim=True)
+            graph_latent = latent - mu
 
-            # Gentle scaling for graph construction only - doesn't affect reconstruction path
-            std = torch.std(graph_latent, dim=0) + 1e-8
-            graph_latent = graph_latent / std.unsqueeze(0) * 1.0
+            # Scaling
+            std = torch.std(graph_latent, dim=0)
+            graph_latent = graph_latent / (std.unsqueeze(0) + 1e-8)
 
-            # Use the graph construction latent only for graph creation
+            # Create a betta-skeleton graph (special case - Gabriel Graph)
             edge_index, edge_attr = self.create_gabriel_graph(graph_latent)
 
-            # Create PyTorch Geometric Data object with full latent space
+            # Create PyTorch Geometric Data object
             data = Data(x=latent[:, 2].reshape(-1, 1), edge_index=edge_index, edge_attr=edge_attr)
 
-            # Step 4: Process with GCN
+            # Decode back to original space with GCN
             x1 = F.relu(self.gcn1(data.x, data.edge_index, data.edge_attr))
-            gcn_output = self.gcn2(x1, data.edge_index, data.edge_attr)
+            x2 = F.relu(self.gcn2(x1, data.edge_index, data.edge_attr))
+            gcn_output = self.gcn3(x2, data.edge_index, data.edge_attr)
 
             # Add skip connection from encoder output
-            skip_processed = self.skip_connection(latent)
-            combined_features = gcn_output + 0.1 * skip_processed
-
-            # Step 5: Decode back to original space
-            reconstructed = self.decoder(combined_features)  # Shape: (8, 3)
+            combined_features = gcn_output + self.alpha * self.skip_connection(latent) # Shape: (8, 3)
 
             # Store results
-            reconstructed_list.append(reconstructed)
+            reconstructed_list.append(combined_features)
             latent_list.append(graph_latent)  # Store visualization latent for display
             edge_index_list.append(edge_index)
 
         # Stack results
-        reconstructed_batch = torch.stack(reconstructed_list)  # Shape: (batch_size, 8, 3)
-        latent_batch = torch.stack(latent_list)  # Shape: (batch_size, 8, latent_dim=3)
+        reconstructed_batch = torch.stack(reconstructed_list)  # Shape: (32, 8, 3)
+        latent_batch = torch.stack(latent_list)  # Shape: (32, 8, 3)
 
         return x_preprocessed, reconstructed_batch, latent_batch, edge_index_list
 
 
 # Improved reconstruction loss with dimension-specific weighting
-def improved_reconstruction_loss(original, reconstructed):
+def reconstruction_loss(original, reconstructed):
     """
-    Weighted reconstruction loss with separate handling of different dimensions
+    Reconstruction loss with separate handling of different dimensions
     """
     # Ensure shapes match
     assert original.shape == reconstructed.shape, f"Shape mismatch: {original.shape} vs {reconstructed.shape}"
 
     # Calculate MSE for each dimension separately
-    # This allows us to weight different dimensions differently
     dim0_loss = F.mse_loss(original[:, :, 0], reconstructed[:, :, 0])  # Agent type
     dim1_loss = F.mse_loss(original[:, :, 1], reconstructed[:, :, 1])  # Position/index
     dim2_loss = F.mse_loss(original[:, :, 2], reconstructed[:, :, 2])  # Value
@@ -177,7 +171,7 @@ def improved_reconstruction_loss(original, reconstructed):
     return dim0_loss + dim1_loss + dim2_loss
 
 
-def train_model(model, dataloader, test_samples, epochs=100, lr=0.001):
+def train_model(model, dataloader, epochs, lr):
     """Train with only reconstruction loss for better convergence"""
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -195,11 +189,9 @@ def train_model(model, dataloader, test_samples, epochs=100, lr=0.001):
 
             # Forward pass
             original, reconstructed, latent, edge_index_list = model(batch)
-            if epoch == epochs - 1:
-                print(original, reconstructed)
 
             # Calculate only reconstruction loss
-            loss = improved_reconstruction_loss(original, reconstructed)
+            loss = reconstruction_loss(original, reconstructed)
 
             # Backward and optimize
             optimizer.zero_grad()
@@ -217,7 +209,7 @@ def train_model(model, dataloader, test_samples, epochs=100, lr=0.001):
         # Update learning rate based on validation loss
         scheduler.step(avg_loss)
 
-    return model, train_losses
+    return model
 
 
 # Generate sample data
@@ -226,37 +218,26 @@ def generate_sample_data(num_samples=1000, batch_size=32):
     data = torch.randn(num_samples, 8) * 5.0  # Random values
     dataset = torch.utils.data.TensorDataset(data)
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
-    return dataloader, data
+    return dataloader
 
 
 # Main function
 def main():
-    # Make sure we have PyTorch Geometric
-    try:
-        import torch_geometric
-        print(f"Using PyTorch Geometric version: {torch_geometric.__version__}")
-    except ImportError:
-        print("PyTorch Geometric not found. Please install with:")
-        print("pip install torch-geometric")
-        return
 
     # Generate dataset
-    dataloader, samples = generate_sample_data(num_samples=1000, batch_size=32)
+    dataloader = generate_sample_data(num_samples=1000, batch_size=32)
 
     # Create model
     model = ImprovedGraphAutoEncoder().to(device)
     print(model)
 
-    # FIX 9: Adjust hyperparameters for training
+    # Hyperparameters for training
     trained_model = train_model(
         model,
         dataloader,
-        samples,
-        epochs=30,
+        epochs=10,
         lr=0.0025
     )
-
-    print("Training complete. Model saved to graph_autoencoder_model.pth")
 
 if __name__ == "__main__":
     main()
