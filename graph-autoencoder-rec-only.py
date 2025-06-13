@@ -4,6 +4,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import GATv2Conv
 from torch_geometric.data import Data
+import os
+import networkx as nx
+import matplotlib.pyplot as plt
+from matplotlib.patches import Circle
+from scipy.spatial import Voronoi, voronoi_plot_2d
 
 
 # Determine device
@@ -103,7 +108,79 @@ class ImprovedGraphAutoEncoder(nn.Module):
             edge_attr = torch.zeros((0, 1), dtype=torch.float, device=points.device)
 
         return edge_index, edge_attr
+    
 
+    def beta_skeleton_graph(self, points, beta=1):
+        n = points.shape[0]
+        edges = []
+        
+        for i in range(n):
+            for j in range(i + 1, n):
+                p1, p2 = points[i], points[j]
+                d = np.linalg.norm(p1 - p2)
+                
+                if d < 1e-10:  # Skip identical points
+                    continue
+                
+                is_edge = True
+                
+                if beta == 1:
+                    # Gabriel graph: check if any point lies inside the circle 
+                    # with diameter p1-p2
+                    center = (p1 + p2) / 2
+                    radius = d / 2
+                    
+                    for k in range(n):
+                        if k != i and k != j:
+                            pk = points[k]
+                            dist_to_center = np.linalg.norm(pk - center)
+                            if dist_to_center < radius:  # Strictly inside
+                                is_edge = False
+                                break
+                else:
+                    # General beta skeleton
+                    if beta < 1e-5:
+                        continue
+                    
+                    # For beta != 1, use the lune-based definition
+                    # Two circles of radius d/(2*beta) centered at points that are
+                    # distance d*beta/2 from the midpoint along the perpendicular
+                    center = (p1 + p2) / 2
+                    direction = (p2 - p1) / d  # unit vector along edge
+                    perpendicular = np.array([-direction[1], direction[0]])  # perpendicular unit vector
+                    
+                    offset = d * np.sqrt(1/(4*beta**2) - 1/4) if beta > 1 else 0
+                    
+                    if beta > 1:
+                        # Two circle centers
+                        c1 = center + offset * perpendicular
+                        c2 = center - offset * perpendicular
+                        radius = d / (2 * beta)
+                        
+                        for k in range(n):
+                            if k != i and k != j:
+                                pk = points[k]
+                                # Point must be outside both circles
+                                if (np.linalg.norm(pk - c1) < radius or 
+                                    np.linalg.norm(pk - c2) < radius):
+                                    is_edge = False
+                                    break
+                    else:  # beta < 1
+                        # Single circle
+                        radius = d / (2 * beta)
+                        for k in range(n):
+                            if k != i and k != j:
+                                pk = points[k]
+                                if np.linalg.norm(pk - center) > radius:
+                                    is_edge = False
+                                    break
+                
+                if is_edge:
+                    edges.append([i, j])
+                    edges.append([j, i])  # bidirectional
+        
+        return edges
+    
     def forward(self, x):
         batch_size = x.size(0)
 
@@ -130,7 +207,13 @@ class ImprovedGraphAutoEncoder(nn.Module):
             graph_latent = graph_latent / (std.unsqueeze(0) + 1e-8)
 
             # Create a betta-skeleton graph (special case - Gabriel Graph)
-            edge_index, edge_attr = self.create_gabriel_graph(graph_latent)
+            #edge_index, edge_attr = self.create_gabriel_graph(graph_latent)
+
+            # Create a betta-skeleton graph (special case - Gabriel Graph)
+            graph_latent_np = graph_latent.detach().cpu().numpy()
+            edges = self.beta_skeleton_graph(graph_latent_np)
+            edge_index = torch.tensor(edges, dtype=torch.long, device=x.device).t()
+            edge_attr = torch.norm(latent[edge_index[0]] - latent[edge_index[1]], dim=1, keepdim=True)
 
             # Create PyTorch Geometric Data object
             data = Data(x=latent[:, 2].reshape(-1, 1), edge_index=edge_index, edge_attr=edge_attr)
@@ -208,7 +291,11 @@ def train_model(model, dataloader, epochs, lr):
 
         # Update learning rate based on validation loss
         scheduler.step(avg_loss)
-
+        visualize_and_save_gabriel_graph(
+            latent_points=latent[0].detach().cpu(),
+            edge_index=edge_index_list[0].detach().cpu(),
+            epoch=epoch
+        )
     return model
 
 
@@ -219,6 +306,65 @@ def generate_sample_data(num_samples=1000, batch_size=32):
     dataset = torch.utils.data.TensorDataset(data)
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
     return dataloader
+
+def visualize_and_save_gabriel_graph(latent_points, edge_index, epoch, save_dir="visual"):
+    """
+    Визуализация и сохранение Gabriel-графа на диск.
+    
+    :param latent_points: (8, 3) — координаты узлов
+    :param edge_index: (2, num_edges) — рёбра графа
+    :param epoch: номер эпохи
+    :param save_dir: директория для сохранения изображений
+    """
+    os.makedirs(save_dir, exist_ok=True)
+
+    G = nx.Graph()
+    positions = {}
+
+    coords = []
+    for i in range(latent_points.shape[0]):
+        x, y = latent_points[i][0].item(), latent_points[i][1].item()
+        G.add_node(i)
+        positions[i] = (x, y)
+        coords.append([x, y])
+
+    coords = np.array(coords)
+    edges = edge_index.t().cpu().numpy()
+    for src, tgt in edges:
+        G.add_edge(src, tgt)
+
+    mst = nx.minimum_spanning_tree(G)
+
+    plt.figure(figsize=(5, 5))
+    ax = plt.gca()
+
+    #vor = Voronoi(coords)
+    #voronoi_plot_2d(vor, ax=ax, show_vertices=False, line_colors='orange', line_width=1.5, line_alpha=0.6, point_size=0)
+
+    
+    nx.draw(G, pos=positions, with_labels=False, node_color='#4e2fe9', node_size=10, edge_color='#2fe94e')
+    nx.draw(mst, pos=positions, with_labels=False, node_color='#4e2fe9', node_size=10, edge_color='#CA2171')
+    #for src, tgt in edges:
+    #    x1, y1 = positions[src]
+    #    x2, y2 = positions[tgt]
+
+    #    # Центр окружности — середина отрезка
+    #    center_x = (x1 + x2) / 2
+    #    center_y = (y1 + y2) / 2
+
+        # Радиус = половина расстояния между точками
+    #    radius = 0.5 * ((x1 - x2)**2 + (y1 - y2)**2)**0.5
+
+    #    circle = Circle((center_x, center_y), radius, edgecolor='#E94F31', facecolor='none', linestyle='--', linewidth=1.5)
+    #    ax.add_patch(circle)
+
+    plt.title(f"Epoch {epoch+1}")
+    plt.axis('equal')
+    plt.tight_layout()
+
+    filename = os.path.join(save_dir, f"epoch{epoch+1:02d}.png")
+    plt.savefig(filename)
+    plt.close()
 
 
 # Main function
