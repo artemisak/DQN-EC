@@ -9,7 +9,19 @@ import networkx as nx
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 from scipy.spatial import Voronoi, voronoi_plot_2d
+import matplotlib.patches as mpatches
+from dataclasses import dataclass
 
+@dataclass
+class NodeDescriptor:
+    name: str       # Например: "self_vel-x"
+    group: str      # Тип: "self_vel", "landmark"
+
+group_color_map = {
+    "self_vel": "#1f77b4",
+    "landmark": "#2ca02c",
+    "unknown": "#7f7f7f"
+}
 
 # Determine device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -253,8 +265,34 @@ def reconstruction_loss(original, reconstructed):
 
     return dim0_loss + dim1_loss + dim2_loss
 
+def frobenius_inequality_loss(original, reconstructed, epsilon=1.0):
+    """
+    Implements Frobenius inequality as a soft constraint:
+        ||original - reconstructed||_F <= epsilon
 
-def train_model(model, dataloader, epochs, lr):
+    Returns a loss term that is zero if the constraint is satisfied,
+    and positive otherwise.
+
+    Args:
+        original (torch.Tensor): shape (B, N, D)
+        reconstructed (torch.Tensor): shape (B, N, D)
+        epsilon (float): upper threshold for Frobenius norm
+
+    Returns:
+        torch.Tensor: scalar loss penalizing violation of the inequality
+    """
+    assert original.shape == reconstructed.shape, "Shape mismatch"
+
+    # Compute Frobenius norm per sample
+    frob_norms = torch.norm(original - reconstructed, p='fro', dim=(1, 2))  # shape: (B,)
+    
+    # Compute violation: max(0, norm - epsilon)
+    violations = torch.clamp(frob_norms - epsilon, min=0.0)
+
+    # Mean over batch
+    return violations.mean()
+
+def train_model(model, dataloader, epochs, lr, param_schema):
     """Train with only reconstruction loss for better convergence"""
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -274,7 +312,7 @@ def train_model(model, dataloader, epochs, lr):
             original, reconstructed, latent, edge_index_list = model(batch)
 
             # Calculate only reconstruction loss
-            loss = reconstruction_loss(original, reconstructed)
+            loss = frobenius_inequality_loss(original, reconstructed)
 
             # Backward and optimize
             optimizer.zero_grad()
@@ -294,10 +332,10 @@ def train_model(model, dataloader, epochs, lr):
         visualize_and_save_gabriel_graph(
             latent_points=latent[0].detach().cpu(),
             edge_index=edge_index_list[0].detach().cpu(),
-            epoch=epoch
+            epoch=epoch,
+            param_schema=param_schema
         )
     return model
-
 
 # Generate sample data
 def generate_sample_data(num_samples=1000, batch_size=32):
@@ -307,7 +345,7 @@ def generate_sample_data(num_samples=1000, batch_size=32):
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
     return dataloader
 
-def visualize_and_save_gabriel_graph(latent_points, edge_index, epoch, save_dir="visual"):
+def visualize_and_save_gabriel_graph(latent_points, edge_index, epoch, save_dir="graph_visualizations", param_schema=None):
     """
     Визуализация и сохранение Gabriel-графа на диск.
     
@@ -335,41 +373,90 @@ def visualize_and_save_gabriel_graph(latent_points, edge_index, epoch, save_dir=
 
     mst = nx.minimum_spanning_tree(G)
 
-    plt.figure(figsize=(5, 5))
-    ax = plt.gca()
+    node_colors = []
+    node_labels = []
+    for i in range(len(latent_points)):
+        if param_schema:
+            group = param_schema[i].group
+            label = param_schema[i].name
+        else:
+            group = "unknown"
+            label = f"node_{i}"
+        color = group_color_map.get(group, group_color_map["unknown"])
+        node_colors.append(color)
+        node_labels.append(label)
+
+    fig, ax = plt.subplots(figsize=(5, 5))
+
+    # Рисуем ноды
+    nx.draw_networkx_nodes(
+        G,
+        pos=positions,
+        node_color=node_colors,
+        node_size=60,
+        ax=ax,
+        linewidths=0.8,
+        edgecolors="black"
+    )
+
+    # Подписи над точками — выше и правее, мелко, без фона
+    for i, (x, y) in positions.items():
+        ax.annotate(
+            node_labels[i],
+            (x, y),
+            textcoords="offset points",
+            xytext=(6, 4),
+            ha='left',
+            fontsize=7,
+            color='black'
+        )
+
+    nx.draw_networkx_edges(G, pos=positions, ax=ax, edge_color="#2fe94e", width=1.2)
+    nx.draw_networkx_edges(mst, pos=positions, ax=ax, edge_color="#CA2171", width=1.6, style="dashed")
+
+    # for src, tgt in edges:
+    #     x1, y1 = positions[src]
+    #     x2, y2 = positions[tgt]
+
+    #     # Центр окружности — середина отрезка
+    #     center_x = (x1 + x2) / 2
+    #     center_y = (y1 + y2) / 2
+
+    #     # Радиус = половина расстояния между точками
+    #     radius = 0.5 * ((x1 - x2)**2 + (y1 - y2)**2)**0.5
+
+    #     circle = Circle((center_x, center_y), radius, edgecolor='#E94F31', facecolor='none', linestyle='--', linewidth=1.5)
+    #     ax.add_patch(circle)
 
     #vor = Voronoi(coords)
     #voronoi_plot_2d(vor, ax=ax, show_vertices=False, line_colors='orange', line_width=1.5, line_alpha=0.6, point_size=0)
 
-    
-    nx.draw(G, pos=positions, with_labels=False, node_color='#4e2fe9', node_size=10, edge_color='#2fe94e')
-    nx.draw(mst, pos=positions, with_labels=False, node_color='#4e2fe9', node_size=10, edge_color='#CA2171')
-    #for src, tgt in edges:
-    #    x1, y1 = positions[src]
-    #    x2, y2 = positions[tgt]
+    # Легенда вне графа
+    legend_elements = [
+        mpatches.Patch(color=color, label=group)
+        for group, color in group_color_map.items() if group != "unknown"
+    ]
+    ax.legend(
+        handles=legend_elements,
+        loc='upper center',
+        bbox_to_anchor=(0.5, -0.08),
+        ncol=len(legend_elements),
+        fontsize=8,
+        frameon=False
+    )
 
-    #    # Центр окружности — середина отрезка
-    #    center_x = (x1 + x2) / 2
-    #    center_y = (y1 + y2) / 2
+    ax.set_title(f"Latent Graph — Epoch {epoch + 1}", fontsize=11)
+    ax.axis('equal')
+    ax.axis('off')
+    plt.tight_layout(rect=[0, 0.05, 1, 1])
 
-        # Радиус = половина расстояния между точками
-    #    radius = 0.5 * ((x1 - x2)**2 + (y1 - y2)**2)**0.5
-
-    #    circle = Circle((center_x, center_y), radius, edgecolor='#E94F31', facecolor='none', linestyle='--', linewidth=1.5)
-    #    ax.add_patch(circle)
-
-    plt.title(f"Epoch {epoch+1}")
-    plt.axis('equal')
-    plt.tight_layout()
-
-    filename = os.path.join(save_dir, f"epoch{epoch+1:02d}.png")
-    plt.savefig(filename)
+    filename = os.path.join(save_dir, f"epoch{epoch + 1:02d}.png")
+    plt.savefig(filename, dpi=150, bbox_inches="tight")
     plt.close()
 
 
 # Main function
 def main():
-
     # Generate dataset
     dataloader = generate_sample_data(num_samples=1000, batch_size=32)
 
@@ -377,12 +464,24 @@ def main():
     model = ImprovedGraphAutoEncoder().to(device)
     print(model)
 
+    param_schema: List[NodeDescriptor] = [
+        NodeDescriptor("vel-x", "self_vel"),
+        NodeDescriptor("vel-y", "self_vel"),
+        NodeDescriptor("landmark-1-rel-x", "landmark"),
+        NodeDescriptor("landmark-1-rel-y", "landmark"),
+        NodeDescriptor("landmark-2-rel-x", "landmark"),
+        NodeDescriptor("landmark-2-rel-y", "landmark"),
+        NodeDescriptor("landmark-3-rel-x", "landmark"),
+        NodeDescriptor("landmark-3-rel-y", "landmark"),
+    ]
+
     # Hyperparameters for training
     trained_model = train_model(
         model,
         dataloader,
         epochs=10,
-        lr=0.0025
+        lr=0.0025,
+        param_schema=param_schema
     )
 
 if __name__ == "__main__":
