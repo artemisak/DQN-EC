@@ -120,17 +120,8 @@ class ImprovedGraphAutoEncoder(nn.Module):
             sample_input = x_preprocessed[b]  # Shape: (8, 3)
             latent = self.encoder(sample_input)  # Shape: (8, 3)
 
-            # Normalization
-            # Center
-            mu = torch.mean(latent, dim=0, keepdim=True)
-            graph_latent = latent - mu
-
-            # Scaling
-            std = torch.std(graph_latent, dim=0)
-            graph_latent = graph_latent / (std.unsqueeze(0) + 1e-8)
-
             # Create a betta-skeleton graph (special case - Gabriel Graph)
-            edge_index, edge_attr = self.create_gabriel_graph(graph_latent)
+            edge_index, edge_attr = self.create_gabriel_graph(latent)
 
             # Create PyTorch Geometric Data object
             data = Data(x=latent[:, 2].reshape(-1, 1), edge_index=edge_index, edge_attr=edge_attr)
@@ -145,7 +136,7 @@ class ImprovedGraphAutoEncoder(nn.Module):
 
             # Store results
             reconstructed_list.append(combined_features)
-            latent_list.append(graph_latent)  # Store visualization latent for display
+            latent_list.append(latent)  # Store visualization latent for display
             edge_index_list.append(edge_index)
 
         # Stack results
