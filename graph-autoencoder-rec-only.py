@@ -14,6 +14,12 @@ from matplotlib.patches import Circle
 from scipy.spatial import Voronoi, voronoi_plot_2d
 import matplotlib.patches as mpatches
 from dataclasses import dataclass
+from pettingzoo.mpe import simple_speaker_listener_v4
+
+import matplotlib.pyplot as plt
+import networkx as nx
+import os
+from datetime import datetime
 
 @dataclass
 class NodeDescriptor:
@@ -31,7 +37,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 class ImprovedGraphAutoEncoder(nn.Module):
-    def __init__(self, input_dim=3, hidden_dim=64):
+    def __init__(self, input_dim=12, output_dim=3, hidden_dim=64):
         super(ImprovedGraphAutoEncoder, self).__init__()
 
         # Encoder MLP
@@ -40,35 +46,34 @@ class ImprovedGraphAutoEncoder(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, input_dim)
+            nn.Linear(hidden_dim, output_dim)
         )
 
         # GCN layers
         self.gcn1 = GATv2Conv(in_channels=-1, out_channels=hidden_dim, edge_dim=1)
         self.gcn2 = GATv2Conv(in_channels=hidden_dim, out_channels=hidden_dim, edge_dim=1)
-        self.gcn3 = GATv2Conv(in_channels=hidden_dim, out_channels=input_dim, edge_dim=1)
+        self.gcn3 = GATv2Conv(in_channels=hidden_dim, out_channels=output_dim, edge_dim=1)
 
         # Skip connection layer
-        self.skip_connection = nn.Linear(input_dim, input_dim)
+        self.skip_connection = nn.Sequential(
+            nn.Linear(output_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, output_dim)
+        )
 
-        # Learnable skip connection layer's threshold
-        self.skip_connection_alpha = nn.Sigmoid()
+        # Head
+        self.head = nn.Sequential(
+            nn.Linear(output_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, input_dim)
+        )
 
-        self.alpha = 0.1
-
-    def preprocess(self, x):
-        """
-        Transform (32, 8) to (32, 8, 3) where each vector is [agent_type, index, value]
-        """
-        batch_size = x.size(0)
-        preprocessed = torch.zeros(batch_size, 8, 3, device=x.device)
-
-        for i in range(8):
-            preprocessed[:, i, 0] = 0.0  # Agent type
-            preprocessed[:, i, 1] = float(i)  # Position/index
-            preprocessed[:, i, 2] = x[:, i]  # Agent's observation value
-
-        return preprocessed
+        self.alpha = 0.1 # TODO: make it learnable
+        # self.alhpa = nn.Sigmoid()
 
     def create_gabriel_graph(self, points):
         """Create Gabriel graph with minimal preprocessing to preserve information"""
@@ -93,11 +98,11 @@ class ImprovedGraphAutoEncoder(nn.Module):
                             break
 
                 if is_gabriel:
-                    dist = torch.norm(points[i] - points[j]).item()
+                    dist = torch.norm(points[i] - points[j])
                     edge_indices.append([i, j])
                     edge_indices.append([j, i])
-                    edge_attrs.append([dist])
-                    edge_attrs.append([dist])
+                    edge_attrs.append(dist)
+                    edge_attrs.append(dist)
 
         # Ensure there's at least one edge
         if not edge_indices:
@@ -107,44 +112,44 @@ class ImprovedGraphAutoEncoder(nn.Module):
             min_dist, min_indices = torch.min(distances + ~mask * 1e10, dim=1)
             min_dist_idx = torch.argmin(min_dist)
             min_pair_idx = min_indices[min_dist_idx]
-            dist = torch.norm(points[min_dist_idx] - points[min_pair_idx]).item()
+            dist = torch.norm(points[min_dist_idx] - points[min_pair_idx])
 
             edge_indices.append([int(min_dist_idx), int(min_pair_idx)])
             edge_indices.append([int(min_pair_idx), int(min_dist_idx)])
-            edge_attrs.append([dist])
-            edge_attrs.append([dist])
+            edge_attrs.append(dist)
+            edge_attrs.append(dist)
 
         # Convert to tensors
         if edge_indices:
             edge_index = torch.tensor(edge_indices, dtype=torch.long, device=points.device).t()
-            edge_attr = torch.tensor(edge_attrs, dtype=torch.float, device=points.device)
+            edge_attr = torch.stack(edge_attrs)
         else:
             edge_index = torch.zeros((2, 0), dtype=torch.long, device=points.device)
             edge_attr = torch.zeros((0, 1), dtype=torch.float, device=points.device)
 
         return edge_index, edge_attr
-    
+
 
     def beta_skeleton_graph(self, points, beta=1):
         n = points.shape[0]
         edges = []
-        
+
         for i in range(n):
             for j in range(i + 1, n):
                 p1, p2 = points[i], points[j]
                 d = np.linalg.norm(p1 - p2)
-                
+
                 if d < 1e-10:  # Skip identical points
                     continue
-                
+
                 is_edge = True
-                
+
                 if beta == 1:
-                    # Gabriel graph: check if any point lies inside the circle 
+                    # Gabriel graph: check if any point lies inside the circle
                     # with diameter p1-p2
                     center = (p1 + p2) / 2
                     radius = d / 2
-                    
+
                     for k in range(n):
                         if k != i and k != j:
                             pk = points[k]
@@ -156,27 +161,27 @@ class ImprovedGraphAutoEncoder(nn.Module):
                     # General beta skeleton
                     if beta < 1e-5:
                         continue
-                    
+
                     # For beta != 1, use the lune-based definition
                     # Two circles of radius d/(2*beta) centered at points that are
                     # distance d*beta/2 from the midpoint along the perpendicular
                     center = (p1 + p2) / 2
                     direction = (p2 - p1) / d  # unit vector along edge
                     perpendicular = np.array([-direction[1], direction[0]])  # perpendicular unit vector
-                    
+
                     offset = d * np.sqrt(1/(4*beta**2) - 1/4) if beta > 1 else 0
-                    
+
                     if beta > 1:
                         # Two circle centers
                         c1 = center + offset * perpendicular
                         c2 = center - offset * perpendicular
                         radius = d / (2 * beta)
-                        
+
                         for k in range(n):
                             if k != i and k != j:
                                 pk = points[k]
                                 # Point must be outside both circles
-                                if (np.linalg.norm(pk - c1) < radius or 
+                                if (np.linalg.norm(pk - c1) < radius or
                                     np.linalg.norm(pk - c2) < radius):
                                     is_edge = False
                                     break
@@ -189,40 +194,31 @@ class ImprovedGraphAutoEncoder(nn.Module):
                                 if np.linalg.norm(pk - center) > radius:
                                     is_edge = False
                                     break
-                
+
                 if is_edge:
                     edges.append([i, j])
                     edges.append([j, i])  # bidirectional
-        
-        return edges
-    
-    def forward(self, x):
-        batch_size = x.size(0)
 
-        # Preprocess input from (batch_size, 8) to (batch_size, 8, 3)
-        x_preprocessed = self.preprocess(x)
+        return edges
+
+    def forward(self, batch):
+
+        batch_size = batch.size(0)
 
         # Process each sample in the batch individually
         reconstructed_list = []
         latent_list = []
         edge_index_list = []
+        edge_attr_list = []
         attn_weights_list = []
 
-        for b in range(batch_size):
-            # Encode each (3) vector to latent vector
-            sample_input = x_preprocessed[b]  # Shape: (8, 3)
-            latent = self.encoder(sample_input)  # Shape: (8, 3)
-
-            # Normalization
-            # Center
-            mu = torch.mean(latent, dim=0, keepdim=True)
-            graph_latent = latent - mu
-
-            # Scaling
-            std = torch.std(graph_latent, dim=0)
-            graph_latent = graph_latent / (std.unsqueeze(0) + 1e-8)
+        for idx in range(batch_size):
+            # Encode each vector to latent vector
+            sample_input = batch[idx]
+            latent = self.encoder(sample_input)
 
             # Create a betta-skeleton graph (special case - Gabriel Graph)
+            edge_index, edge_attr = self.create_gabriel_graph(latent)
             #edge_index, edge_attr = self.create_gabriel_graph(graph_latent)
 
             # Create a betta-skeleton graph (special case - Gabriel Graph)
@@ -237,68 +233,55 @@ class ImprovedGraphAutoEncoder(nn.Module):
             # Decode back to original space with GCN
             x1 = F.relu(self.gcn1(data.x, data.edge_index, data.edge_attr))
             x2 = F.relu(self.gcn2(x1, data.edge_index, data.edge_attr))
-            gcn_output, (final_edge_index, final_attn_weights) = self.gcn3(x2, data.edge_index, data.edge_attr, return_attention_weights=True)
+            gcn_output = self.gcn3(x2, data.edge_index, data.edge_attr)
 
             # Add skip connection from encoder output
-            combined_features = gcn_output + self.alpha * self.skip_connection(latent) # Shape: (8, 3)
+            combined_features = gcn_output + self.alpha * self.skip_connection(latent)
+
+            # Head layer
+            reconstructed = self.head(combined_features)
 
             # Store results
-            reconstructed_list.append(combined_features)
-            latent_list.append(graph_latent)  # Store visualization latent for display
+            reconstructed_list.append(reconstructed)
+            latent_list.append(latent)
             edge_index_list.append(edge_index)
-            attn_weights_list.append(final_attn_weights)
+            edge_attr_list.append(edge_attr)
 
         # Stack results
-        reconstructed_batch = torch.stack(reconstructed_list)  # Shape: (32, 8, 3)
-        latent_batch = torch.stack(latent_list)  # Shape: (32, 8, 3)
+        reconstructed_batch = torch.stack(reconstructed_list)
+        latent_batch = torch.stack(latent_list)
 
-
-        return x_preprocessed, reconstructed_batch, latent_batch, edge_index_list, attn_weights_list
+        return batch, reconstructed_batch, latent_batch, edge_index_list, edge_attr_list
 
 
 # Improved reconstruction loss with dimension-specific weighting
 def reconstruction_loss(original, reconstructed):
     """
-    Reconstruction loss with separate handling of different dimensions
+    Reconstruction loss
     """
-    # Ensure shapes match
-    assert original.shape == reconstructed.shape, f"Shape mismatch: {original.shape} vs {reconstructed.shape}"
+    return F.mse_loss(reconstructed, original)
 
-    # Calculate MSE for each dimension separately
-    dim0_loss = F.mse_loss(original[:, :, 0], reconstructed[:, :, 0])  # Agent type
-    dim1_loss = F.mse_loss(original[:, :, 1], reconstructed[:, :, 1])  # Position/index
-    dim2_loss = F.mse_loss(original[:, :, 2], reconstructed[:, :, 2])  # Value
 
-    return dim0_loss + dim1_loss + dim2_loss
-
-def frobenius_inequality_loss(original, reconstructed, epsilon=1.0):
+def l1_loss(edge_attr_list):
     """
-    Implements Frobenius inequality as a soft constraint:
-        ||original - reconstructed||_F <= epsilon
+    L1 loss for the edges on the graph
+    """
+    return torch.norm(torch.cat(edge_attr_list), p=1)
 
-    Returns a loss term that is zero if the constraint is satisfied,
-    and positive otherwise.
+
+def draw_graph(latent_points, edge_index, edge_attr, title="Gabriel Graph", save_dir="graphs"):
+    """
+    Draw a graph visualization of the latent space points and their connections
 
     Args:
-        original (torch.Tensor): shape (B, N, D)
-        reconstructed (torch.Tensor): shape (B, N, D)
-        epsilon (float): upper threshold for Frobenius norm
-
-    Returns:
-        torch.Tensor: scalar loss penalizing violation of the inequality
+        latent_points: Tensor of shape (num_points, 3) containing 3D coordinates
+        edge_index: Tensor of shape (2, num_edges) containing edge connections
+        edge_attr: Tensor of edge attributes (distances)
+        title: Title for the plot
+        save_dir: Directory to save the plots
     """
-    assert original.shape == reconstructed.shape, "Shape mismatch"
 
-    # Compute Frobenius norm per sample
-    frob_norms = torch.norm(original - reconstructed, p='fro', dim=(1, 2))  # shape: (B,)
-    
-    # Compute violation: max(0, norm - epsilon)
-    violations = torch.clamp(frob_norms - epsilon, min=0.0)
-
-    # Mean over batch
-    return violations.mean()
-
-def train_model(model, dataloader, epochs, lr, param_schema):
+def train_model(model, dataloader, epochs, lr):
     """Train with only reconstruction loss for better convergence"""
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -311,14 +294,13 @@ def train_model(model, dataloader, epochs, lr, param_schema):
         model.train()
         epoch_loss = 0.0
 
-        for batch_idx, (batch,) in enumerate(dataloader):
-            batch = batch.to(device)
+        for _, (batch,) in enumerate(dataloader):
 
             # Forward pass
-            original, reconstructed, latent, edge_index_list, attn_weights_list = model(batch)
+            original, reconstructed, latent_batch, edge_index_list, edge_attr_list = model(batch)
 
-            # Calculate only reconstruction loss
-            loss = frobenius_inequality_loss(original, reconstructed)
+            # Calculate the combined loss function
+            loss = reconstruction_loss(original, reconstructed) + 1e-6  * l1_loss(edge_attr_list)
 
             # Backward and optimize
             optimizer.zero_grad()
@@ -328,6 +310,20 @@ def train_model(model, dataloader, epochs, lr, param_schema):
 
             epoch_loss += loss.item()
 
+        if epoch % 100 == 0:
+            print(f'Epoch: {epoch}')
+            print('='*50, 'Original', '='*50)
+            print(torch.round(original[0], decimals=1))
+            print('='*50, 'Reconstructed', '='*50)
+            print(torch.round(reconstructed[0], decimals=1))
+            visualize_and_save_gabriel_graph(
+                latent_points=latent[0].detach().cpu(),
+                edge_index=edge_index_list[0].detach().cpu(),
+                attn_weights=attn_weights_list[0].detach().cpu(),
+                epoch=epoch,
+                param_schema=param_schema
+            )
+
         avg_loss = epoch_loss / len(dataloader)
         train_losses.append(avg_loss)
 
@@ -335,27 +331,66 @@ def train_model(model, dataloader, epochs, lr, param_schema):
 
         # Update learning rate based on validation loss
         scheduler.step(avg_loss)
-        visualize_and_save_gabriel_graph(
-            latent_points=latent[0].detach().cpu(),
-            edge_index=edge_index_list[0].detach().cpu(),
-            attn_weights=attn_weights_list[0].detach().cpu(),
-            epoch=epoch,
-            param_schema=param_schema
-        )
-    return model
+    # Save the trained model
+    torch.save({
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(),
+        'final_loss': avg_loss,
+        'epochs_trained': epochs,
+        'model_config': {
+            'input_dim': 12,
+            'output_dim': 3,
+            'hidden_dim': 64
+        }
+    }, save_path)
+
+    print(f"Model saved to {save_path}")
+
 
 # Generate sample data
-def generate_sample_data(num_samples=1000, batch_size=32):
-    """Generate random input data"""
-    data = torch.randn(num_samples, 8) * 5.0  # Random values
-    dataset = torch.utils.data.TensorDataset(data)
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
-    return dataloader
+def generate_sample_data(num_samples=256, batch_size=32):
+    """Sample the data from the environment with a random policy"""
 
+    env = simple_speaker_listener_v4.parallel_env(max_cycles=num_samples)
+    env.reset()
+    observations = []
+
+    def create_observation_pair(message):
+        """Create both observation variants for a message"""
+
+        # First observation (agent_type=0)
+        obs1 = torch.zeros(12, 12)
+        obs1[:, :11] = torch.eye(12, 11)
+        obs1[0:8, 11] = torch.tensor(message[:8])  # velocity and landmarks
+        obs1[8:11, 11] = -1  # masked out
+        obs1[11, 11] = 0  # agent_type
+
+        # Second observation (agent_type=1)
+        obs2 = torch.zeros(12, 12)
+        obs2[:, :11] = torch.eye(12, 11)
+        obs2[0:8, 11] = -1  # masked out
+        obs2[8:11, 11] = torch.tensor(message[8:])  # target flags
+        obs2[11, 11] = 1  # agent_type
+
+        return [obs1, obs2]
+
+    while env.agents and len(observations) < num_samples:
+        actions = {agent: env.action_space(agent).sample() for agent in env.agents}
+        obs, *_ = env.step(actions)
+        observations.extend(create_observation_pair(obs['listener_0']))
+
+    env.close()
+
+    return torch.utils.data.DataLoader(
+        torch.utils.data.TensorDataset(torch.stack(observations).to(device)),
+        batch_size=batch_size,
+        shuffle=True
+    )
 def visualize_and_save_gabriel_graph(latent_points, edge_index, attn_weights, epoch, save_dir="graph_visualizations", param_schema=None):
     """
     Визуализация и сохранение Gabriel-графа на диск.
-    
+
     :param latent_points: (8, 3) — координаты узлов
     :param edge_index: (2, num_edges) — рёбра графа
     :param epoch: номер эпохи
@@ -514,12 +549,19 @@ def visualize_and_save_gabriel_graph(latent_points, edge_index, attn_weights, ep
 
 # Main function
 def main():
+    # Create directories for saving outputs
+    os.makedirs("training_graphs", exist_ok=True)
+
     # Generate dataset
-    dataloader = generate_sample_data(num_samples=1000, batch_size=32)
+    dataloader = generate_sample_data()
 
     # Create model
     model = ImprovedGraphAutoEncoder().to(device)
     print(model)
+
+    # Create a timestamped model filename
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    model_filename = f"graph_autoencoder_{timestamp}.pth"
 
     param_schema: List[NodeDescriptor] = [
         NodeDescriptor("vel-x", "self_vel"),
@@ -533,13 +575,16 @@ def main():
     ]
 
     # Hyperparameters for training
-    trained_model = train_model(
+    train_model(
         model,
         dataloader,
-        epochs=10,
+        epochs=300,
         lr=0.0025,
+        save_path=model_filename,
         param_schema=param_schema
     )
+
+    print(f"Training completed! Model saved as {model_filename}")
 
 if __name__ == "__main__":
     main()
