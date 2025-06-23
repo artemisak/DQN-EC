@@ -9,7 +9,6 @@ from pettingzoo.mpe import simple_speaker_listener_v4
 import matplotlib.pyplot as plt
 import networkx as nx
 import os
-from datetime import datetime
 
 
 # Determine device
@@ -52,8 +51,7 @@ class ImprovedGraphAutoEncoder(nn.Module):
             nn.Linear(hidden_dim, input_dim)
         )
 
-        self.alpha = 0.1 # TODO: make it learnable
-        # self.alhpa = nn.Sigmoid()
+        self.alpha = 0.1
 
     def create_gabriel_graph(self, points):
         """Create Gabriel graph with minimal preprocessing to preserve information"""
@@ -110,7 +108,6 @@ class ImprovedGraphAutoEncoder(nn.Module):
         return edge_index, edge_attr
 
     def forward(self, batch):
-
         batch_size = batch.size(0)
 
         # Process each sample in the batch individually
@@ -154,31 +151,9 @@ class ImprovedGraphAutoEncoder(nn.Module):
         return batch, reconstructed_batch, latent_batch, edge_index_list, edge_attr_list
 
 
-# Improved reconstruction loss with dimension-specific weighting
-def reconstruction_loss(original, reconstructed):
-    """
-    Reconstruction loss
-    """
-    return F.mse_loss(reconstructed, original)
-
-
-def l1_loss(edge_attr_list):
-    """
-    L1 loss for the edges on the graph
-    """
-    return torch.norm(torch.cat(edge_attr_list), p=1)
-
-
 def draw_graph(latent_points, edge_index, edge_attr, title="Gabriel Graph", save_dir="graphs"):
     """
     Draw a graph visualization of the latent space points and their connections
-    
-    Args:
-        latent_points: Tensor of shape (num_points, 3) containing 3D coordinates
-        edge_index: Tensor of shape (2, num_edges) containing edge connections
-        edge_attr: Tensor of edge attributes (distances)
-        title: Title for the plot
-        save_dir: Directory to save the plots
     """
     # Create save directory if it doesn't exist
     os.makedirs(save_dir, exist_ok=True)
@@ -215,7 +190,7 @@ def draw_graph(latent_points, edge_index, edge_attr, title="Gabriel Graph", save
             G.add_edge(node1, node2, weight=weight)
     
     # Create the plot
-    plt.figure(figsize=(10, 8))
+    plt.figure(figsize=(12, 10))
     
     # Get node positions
     pos = nx.get_node_attributes(G, 'pos')
@@ -223,7 +198,7 @@ def draw_graph(latent_points, edge_index, edge_attr, title="Gabriel Graph", save
     # Draw the graph
     if G.number_of_edges() > 0:
         # Draw edges
-        nx.draw_networkx_edges(G, pos, alpha=0.6, width=1.5, edge_color='gray')
+        nx.draw_networkx_edges(G, pos, alpha=0.6, width=2, edge_color='gray')
         
         # Draw edge labels (distances)
         if len(edge_weights) > 0:
@@ -231,167 +206,165 @@ def draw_graph(latent_points, edge_index, edge_attr, title="Gabriel Graph", save
             for i, (u, v) in enumerate(G.edges()):
                 if i < len(edge_weights):
                     edge_labels[(u, v)] = f'{edge_weights[i]:.2f}'
-            nx.draw_networkx_edge_labels(G, pos, edge_labels, font_size=8)
+            nx.draw_networkx_edge_labels(G, pos, edge_labels, font_size=9)
     
     # Draw nodes
     nx.draw_networkx_nodes(G, pos, node_color='lightblue', 
-                          node_size=500, alpha=0.8)
+                          node_size=800, alpha=0.8)
     
     # Draw node labels
-    nx.draw_networkx_labels(G, pos, font_size=10, font_weight='bold')
+    nx.draw_networkx_labels(G, pos, font_size=12, font_weight='bold')
     
     # Add z-coordinate as text annotations
     for i, (x, y) in pos.items():
         plt.annotate(f'z={points[i, 2]:.2f}', 
                     (x, y), xytext=(5, 5), 
                     textcoords='offset points', 
-                    fontsize=8, alpha=0.7)
+                    fontsize=10, alpha=0.8, 
+                    bbox=dict(boxstyle="round,pad=0.2", facecolor='yellow', alpha=0.7))
     
-    plt.title(f'{title}\nNodes: {G.number_of_nodes()}, Edges: {G.number_of_edges()}')
+    plt.title(f'{title}\nNodes: {G.number_of_nodes()}, Edges: {G.number_of_edges()}', fontsize=14)
     plt.axis('equal')
     plt.grid(True, alpha=0.3)
-    plt.xlabel('Latent Dimension 1')
-    plt.ylabel('Latent Dimension 2')
+    plt.xlabel('Latent Dimension 1', fontsize=12)
+    plt.ylabel('Latent Dimension 2', fontsize=12)
     
     # Save the plot
-    filename = f'{title.lower().replace(" ", "_").replace(":", "_")}.png'
+    filename = f'{title.lower().replace(" ", "_").replace(":", "_").replace(",", "_")}.png'
     plt.tight_layout()
     plt.savefig(os.path.join(save_dir, filename), 
-                dpi=150, bbox_inches='tight')
+                dpi=200, bbox_inches='tight')
+    plt.show()  # Display the plot
     plt.close()  # Close the figure to free memory
     
     return G
 
 
-def train_model(model, dataloader, epochs, lr, save_path="trained_model.pth"):
-    """Train with only reconstruction loss for better convergence"""
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=5
-    )
-
-    train_losses = []
-
-    for epoch in range(epochs):
-        model.train()
-        epoch_loss = 0.0
-
-        for _, (batch,) in enumerate(dataloader):
-
-            # Forward pass
-            original, reconstructed, latent_batch, edge_index_list, edge_attr_list = model(batch)
-
-            # Calculate the combined loss function
-            loss = reconstruction_loss(original, reconstructed) + 1e-6  * l1_loss(edge_attr_list)
-
-            # Backward and optimize
-            optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
-
-            epoch_loss += loss.item()
-
-        if epoch % 100 == 0:
-            print(f'Epoch: {epoch}')
-            print('='*50, 'Original', '='*50)
-            print(torch.round(original[0], decimals=1))
-            print('='*50, 'Reconstructed', '='*50)
-            print(torch.round(reconstructed[0], decimals=1))
-            draw_graph(latent_batch[0], edge_index=edge_index_list[0], edge_attr=edge_attr_list[0], 
-                      title=f"Training Epoch {epoch}", save_dir="training_graphs")
-
-        avg_loss = epoch_loss / len(dataloader)
-        train_losses.append(avg_loss)
-
-        print(f'Epoch [{epoch + 1}/{epochs}], Avg Loss: {avg_loss:.6f}')
-
-        # Update learning rate based on validation loss
-        scheduler.step(avg_loss)
-
-    # Save the trained model
-    torch.save({
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'scheduler_state_dict': scheduler.state_dict(),
-        'final_loss': avg_loss,
-        'epochs_trained': epochs,
-        'model_config': {
-            'input_dim': 12,
-            'output_dim': 3,
-            'hidden_dim': 64
-        }
-    }, save_path)
+def load_model(model_path, device):
+    """Load the trained model from checkpoint"""
+    # Create model instance
+    model = ImprovedGraphAutoEncoder().to(device)
     
-    print(f"Model saved to {save_path}")
-
-
-# Generate sample data
-def generate_sample_data(num_samples=256, batch_size=32):
-    """Sample the data from the environment with a random policy"""
+    # Load checkpoint
+    checkpoint = torch.load(model_path, map_location=device)
+    model.load_state_dict(checkpoint['model_state_dict'])
     
-    env = simple_speaker_listener_v4.parallel_env(max_cycles=num_samples)
+    print(f"Model loaded from {model_path}")
+    print(f"Final training loss: {checkpoint['final_loss']:.6f}")
+    print(f"Epochs trained: {checkpoint['epochs_trained']}")
+    
+    return model
+
+
+def sample_environment_data(num_samples=5):
+    """Sample a few messages from the environment"""
+    env = simple_speaker_listener_v4.parallel_env(max_cycles=100)
     env.reset()
     observations = []
     
     def create_observation_pair(message):
         """Create both observation variants for a message"""
-
         # First observation (agent_type=0)
         obs1 = torch.zeros(12, 12)
         obs1[:, :11] = torch.eye(12, 11)
+        obs1[11, 11] = 0  # agent_type
         obs1[0:8, 11] = torch.tensor(message[:8])  # velocity and landmarks
         obs1[8:11, 11] = -1  # masked out
-        obs1[11, 11] = 0  # agent_type
         
         # Second observation (agent_type=1) 
         obs2 = torch.zeros(12, 12)
         obs2[:, :11] = torch.eye(12, 11)
+        obs2[11, 11] = 1  # agent_type
         obs2[0:8, 11] = -1  # masked out
         obs2[8:11, 11] = torch.tensor(message[8:])  # target flags
-        obs2[11, 11] = 1  # agent_type
         
         return [obs1, obs2]
     
-    while env.agents and len(observations) < num_samples:
+    sample_count = 0
+    while env.agents and sample_count < num_samples:
         actions = {agent: env.action_space(agent).sample() for agent in env.agents}
         obs, *_ = env.step(actions)
-        observations.extend(create_observation_pair(obs['listener_0']))
+        
+        if 'listener_0' in obs:
+            pair = create_observation_pair(obs['listener_0'])
+            observations.extend(pair)
+            sample_count += 1
     
     env.close()
     
-    return torch.utils.data.DataLoader(
-        torch.utils.data.TensorDataset(torch.stack(observations).to(device)),
-        batch_size=batch_size,
-        shuffle=True
-    )
+    return torch.stack(observations).to(device)
 
-# Main function
+
+def visualize_model_predictions(model, samples, save_dir="inference_graphs"):
+    """Run inference on samples and visualize the resulting graphs"""
+    model.eval()
+    
+    os.makedirs(save_dir, exist_ok=True)
+    
+    with torch.no_grad():
+        # Process all samples at once
+        original, reconstructed, latent_batch, edge_index_list, edge_attr_list = model(samples)
+        
+        print("="*60)
+        print("MODEL INFERENCE RESULTS")
+        print("="*60)
+        
+        # Visualize each sample
+        for i in range(samples.shape[0]):
+            print(f"\nSample {i+1}:")
+            print("-" * 40)
+            
+            print("Original observation shape:", original[i].shape)
+            print("Reconstructed observation shape:", reconstructed[i].shape)
+            print("Latent representation shape:", latent_batch[i].shape)
+            print("Number of edges in graph:", edge_index_list[i].shape[1])
+            
+            # Calculate reconstruction error
+            recon_error = F.mse_loss(original[i], reconstructed[i]).item()
+            print(f"Reconstruction error (MSE): {recon_error:.6f}")
+            
+            # Print latent coordinates
+            print("Latent coordinates:")
+            for j, point in enumerate(latent_batch[i]):
+                print(f"  Node {j}: ({point[0]:.3f}, {point[1]:.3f}, {point[2]:.3f})")
+            
+            # Visualize the graph
+            agent_type = "Listenet" if original[i][11, 11] == 0 else "Speaker"
+            title = f"Sample {i+1} - {agent_type} Agent"
+            
+            draw_graph(
+                latent_batch[i], 
+                edge_index_list[i], 
+                edge_attr_list[i],
+                title=title,
+                save_dir=save_dir
+            )
+            
+            print(f"Graph visualization saved for {title}")
+
+
 def main():
-    # Create directories for saving outputs
-    os.makedirs("training_graphs", exist_ok=True)
+    # Model filename
+    model_path = "graph_autoencoder_20250623_210243.pth"
     
-    # Generate dataset
-    dataloader = generate_sample_data()
-
-    # Create model
-    model = ImprovedGraphAutoEncoder().to(device)
-    print(model)
-
-    # Create a timestamped model filename
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    model_filename = f"graph_autoencoder_{timestamp}.pth"
-
-    # Hyperparameters for training
-    train_model(
-        model,
-        dataloader,
-        epochs=300,
-        lr=0.0025,
-        save_path=model_filename
-    )
+    # Check if model file exists
+    if not os.path.exists(model_path):
+        print(f"Error: Model file '{model_path}' not found!")
+        print("Please make sure the model file is in the current directory.")
+        return
     
-    print(f"Training completed! Model saved as {model_filename}")
+    print("Loading trained model...")
+    model = load_model(model_path, device)
+    
+    print("\nSampling data from environment...")
+    samples = sample_environment_data(num_samples=5)
+    print(f"Sampled {samples.shape[0]} observations")
+    
+    print("\nRunning inference and generating visualizations...")
+    visualize_model_predictions(model, samples)
+    
+    print("\nVisualization complete! Check the 'inference_graphs' directory for saved plots.")
+
 
 if __name__ == "__main__":
     main()
