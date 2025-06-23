@@ -1,3 +1,6 @@
+from collections import defaultdict
+from typing import List
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -203,6 +206,7 @@ class ImprovedGraphAutoEncoder(nn.Module):
         reconstructed_list = []
         latent_list = []
         edge_index_list = []
+        attn_weights_list = []
 
         for b in range(batch_size):
             # Encode each (3) vector to latent vector
@@ -233,7 +237,7 @@ class ImprovedGraphAutoEncoder(nn.Module):
             # Decode back to original space with GCN
             x1 = F.relu(self.gcn1(data.x, data.edge_index, data.edge_attr))
             x2 = F.relu(self.gcn2(x1, data.edge_index, data.edge_attr))
-            gcn_output = self.gcn3(x2, data.edge_index, data.edge_attr)
+            gcn_output, (final_edge_index, final_attn_weights) = self.gcn3(x2, data.edge_index, data.edge_attr, return_attention_weights=True)
 
             # Add skip connection from encoder output
             combined_features = gcn_output + self.alpha * self.skip_connection(latent) # Shape: (8, 3)
@@ -242,12 +246,14 @@ class ImprovedGraphAutoEncoder(nn.Module):
             reconstructed_list.append(combined_features)
             latent_list.append(graph_latent)  # Store visualization latent for display
             edge_index_list.append(edge_index)
+            attn_weights_list.append(final_attn_weights)
 
         # Stack results
         reconstructed_batch = torch.stack(reconstructed_list)  # Shape: (32, 8, 3)
         latent_batch = torch.stack(latent_list)  # Shape: (32, 8, 3)
 
-        return x_preprocessed, reconstructed_batch, latent_batch, edge_index_list
+
+        return x_preprocessed, reconstructed_batch, latent_batch, edge_index_list, attn_weights_list
 
 
 # Improved reconstruction loss with dimension-specific weighting
@@ -309,7 +315,7 @@ def train_model(model, dataloader, epochs, lr, param_schema):
             batch = batch.to(device)
 
             # Forward pass
-            original, reconstructed, latent, edge_index_list = model(batch)
+            original, reconstructed, latent, edge_index_list, attn_weights_list = model(batch)
 
             # Calculate only reconstruction loss
             loss = frobenius_inequality_loss(original, reconstructed)
@@ -332,6 +338,7 @@ def train_model(model, dataloader, epochs, lr, param_schema):
         visualize_and_save_gabriel_graph(
             latent_points=latent[0].detach().cpu(),
             edge_index=edge_index_list[0].detach().cpu(),
+            attn_weights=attn_weights_list[0].detach().cpu(),
             epoch=epoch,
             param_schema=param_schema
         )
@@ -345,7 +352,7 @@ def generate_sample_data(num_samples=1000, batch_size=32):
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
     return dataloader
 
-def visualize_and_save_gabriel_graph(latent_points, edge_index, epoch, save_dir="graph_visualizations", param_schema=None):
+def visualize_and_save_gabriel_graph(latent_points, edge_index, attn_weights, epoch, save_dir="graph_visualizations", param_schema=None):
     """
     Визуализация и сохранение Gabriel-графа на диск.
     
@@ -374,19 +381,21 @@ def visualize_and_save_gabriel_graph(latent_points, edge_index, epoch, save_dir=
     mst = nx.minimum_spanning_tree(G)
 
     node_colors = []
-    node_labels = []
     for i in range(len(latent_points)):
         if param_schema:
             group = param_schema[i].group
-            label = param_schema[i].name
         else:
             group = "unknown"
-            label = f"node_{i}"
         color = group_color_map.get(group, group_color_map["unknown"])
         node_colors.append(color)
-        node_labels.append(label)
 
-    fig, ax = plt.subplots(figsize=(5, 5))
+    weights = attn_weights.squeeze().cpu().numpy()
+    edge_labels = {}
+    for (src, tgt), weight in zip(edges, weights):
+        G.add_edge(src, tgt, weight=weight)
+        edge_labels[(src, tgt)] = float(weight)
+
+    fig, ax = plt.subplots(figsize=(9, 6))
 
     # Рисуем ноды
     nx.draw_networkx_nodes(
@@ -402,16 +411,18 @@ def visualize_and_save_gabriel_graph(latent_points, edge_index, epoch, save_dir=
     # Подписи над точками — выше и правее, мелко, без фона
     for i, (x, y) in positions.items():
         ax.annotate(
-            node_labels[i],
+            str(i),
             (x, y),
             textcoords="offset points",
-            xytext=(6, 4),
-            ha='left',
+            xytext=(0, -10),
+            ha='center',
             fontsize=7,
             color='black'
         )
 
     nx.draw_networkx_edges(G, pos=positions, ax=ax, edge_color="#2fe94e", width=1.2)
+
+    # Draw MST
     nx.draw_networkx_edges(mst, pos=positions, ax=ax, edge_color="#CA2171", width=1.6, style="dashed")
 
     # for src, tgt in edges:
@@ -428,27 +439,73 @@ def visualize_and_save_gabriel_graph(latent_points, edge_index, epoch, save_dir=
     #     circle = Circle((center_x, center_y), radius, edgecolor='#E94F31', facecolor='none', linestyle='--', linewidth=1.5)
     #     ax.add_patch(circle)
 
-    #vor = Voronoi(coords)
-    #voronoi_plot_2d(vor, ax=ax, show_vertices=False, line_colors='orange', line_width=1.5, line_alpha=0.6, point_size=0)
+    # vor = Voronoi(coords)
+    # voronoi_plot_2d(vor, ax=ax, show_vertices=False, line_colors='orange', line_width=1.5, line_alpha=0.6, point_size=0)
 
-    # Легенда вне графа
+    # Сначала создаём стандартные элементы легенды по группам
     legend_elements = [
         mpatches.Patch(color=color, label=group)
         for group, color in group_color_map.items() if group != "unknown"
     ]
+
     ax.legend(
         handles=legend_elements,
         loc='upper center',
-        bbox_to_anchor=(0.5, -0.08),
+        bbox_to_anchor=(0.5, -0.08),  # под графиком
         ncol=len(legend_elements),
         fontsize=8,
         frameon=False
     )
 
+    if param_schema:
+        max_name_len = max(len(p.name) for p in param_schema)
+    else:
+        max_name_len = max(len(f"node_{i}") for i in range(len(latent_points)))
+
+    # Минимальная ширина имени, чтобы не было слишком узко
+    name_col_width = max(max_name_len, 10)
+    num_col_width = max(len(str(len(latent_points) - 1)), 3)  # ширина для номера узла
+
+    # Формируем заголовки с динамической шириной
+    header_nodes = f"Nodes:\n{'No.':<{num_col_width}} | {'Name':<{name_col_width}} |     X     |     Y    \n"
+    separator_nodes = "-" * (num_col_width + name_col_width + 24) + "\n"
+    node_table_text = header_nodes + separator_nodes
+    for i in range(len(latent_points)):
+        name = param_schema[i].name if param_schema else f"node_{i}"
+        x_val = latent_points[i][0].item()
+        y_val = latent_points[i][1].item()
+        node_table_text += f"{i:<{num_col_width}} | {name:<{name_col_width}} | {x_val:>8.3f} | {y_val:>8.3f}\n"
+
+    header_edges = f"Edges:\n{'From':<{name_col_width}} | {'To':<{name_col_width}} | Weight\n"
+    separator_edges = "-" * (name_col_width * 2 + 11) + "\n"
+    edge_table_text = header_edges + separator_edges
+    for (src, tgt), weight in edge_labels.items():
+        src_name = param_schema[src].name if param_schema else f"node_{src}"
+        tgt_name = param_schema[tgt].name if param_schema else f"node_{tgt}"
+        edge_table_text += f"{src_name:<{name_col_width}} | {tgt_name:<{name_col_width}} | {weight:>7.3f}\n"
+
+    ax.text(
+        1.02, 0.95, node_table_text,
+        transform=ax.transAxes,
+        fontsize=7,
+        family='monospace',
+        verticalalignment='top',
+        horizontalalignment='left'
+    )
+
+    ax.text(
+        1.02, 0.6, edge_table_text,
+        transform=ax.transAxes,
+        fontsize=7,
+        family='monospace',
+        verticalalignment='top',
+        horizontalalignment='left'
+    )
+
     ax.set_title(f"Latent Graph — Epoch {epoch + 1}", fontsize=11)
     ax.axis('equal')
     ax.axis('off')
-    plt.tight_layout(rect=[0, 0.05, 1, 1])
+    plt.tight_layout(rect=[0, 0.05, 0.8, 1])
 
     filename = os.path.join(save_dir, f"epoch{epoch + 1:02d}.png")
     plt.savefig(filename, dpi=150, bbox_inches="tight")
