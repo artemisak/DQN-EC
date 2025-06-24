@@ -274,7 +274,7 @@ def train_model(model, dataloader, epochs, lr, param_schema, save_path="model"):
 
     train_losses = []
 
-    for epoch in range(epochs):
+    for epoch in range(1, epochs+1):
         model.train()
         epoch_loss = 0.0
 
@@ -294,7 +294,7 @@ def train_model(model, dataloader, epochs, lr, param_schema, save_path="model"):
 
             epoch_loss += loss.item()
 
-        if epoch % 30 == 0:
+        if (epoch % 30 == 0) or (epoch == 1):
             print(f'Epoch: {epoch}')
             print('='*50, 'Original', '='*50)
             print(torch.round(original[0], decimals=1))
@@ -311,7 +311,7 @@ def train_model(model, dataloader, epochs, lr, param_schema, save_path="model"):
         avg_loss = epoch_loss / len(dataloader)
         train_losses.append(avg_loss)
 
-        print(f'Epoch [{epoch + 1}/{epochs}], Avg Loss: {avg_loss:.6f}')
+        print(f'Epoch [{epoch}/{epochs}], Avg Loss: {avg_loss:.6f}')
 
         # Update learning rate based on validation loss
         scheduler.step(avg_loss)
@@ -429,7 +429,7 @@ def visualize_and_save_gabriel_graph(latent_points, edge_index, attn_weights, ep
 
     ax_graph.axis('off')
     ax_graph.set_aspect('equal', adjustable='box')
-    ax_graph.set_title(f"Latent Graph — Epoch {epoch + 1}", fontsize=11)
+    ax_graph.set_title(f"Latent Graph — Epoch {epoch}", fontsize=11)
     ax_nodes.axis('off')
     ax_edges.axis('off')
     # Рисуем ноды
