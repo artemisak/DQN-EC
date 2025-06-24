@@ -1,4 +1,3 @@
-from collections import defaultdict
 from typing import List
 
 import numpy as np
@@ -7,9 +6,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import GATv2Conv
 from torch_geometric.data import Data
-import os
-import networkx as nx
-import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 from scipy.spatial import Voronoi, voronoi_plot_2d
 import matplotlib.patches as mpatches
@@ -29,6 +25,8 @@ class NodeDescriptor:
 group_color_map = {
     "self_vel": "#1f77b4",
     "landmark": "#2ca02c",
+    "target": "#f54242",
+    "agent": "#8202fa",
     "unknown": "#7f7f7f"
 }
 
@@ -222,9 +220,9 @@ class ImprovedGraphAutoEncoder(nn.Module):
             #edge_index, edge_attr = self.create_gabriel_graph(graph_latent)
 
             # Create a betta-skeleton graph (special case - Gabriel Graph)
-            graph_latent_np = graph_latent.detach().cpu().numpy()
+            graph_latent_np = latent.detach().cpu().numpy()
             edges = self.beta_skeleton_graph(graph_latent_np)
-            edge_index = torch.tensor(edges, dtype=torch.long, device=x.device).t()
+            edge_index = torch.tensor(edges, dtype=torch.long, device=batch.device).t()
             edge_attr = torch.norm(latent[edge_index[0]] - latent[edge_index[1]], dim=1, keepdim=True)
 
             # Create PyTorch Geometric Data object
@@ -268,20 +266,7 @@ def l1_loss(edge_attr_list):
     """
     return torch.norm(torch.cat(edge_attr_list), p=1)
 
-
-def draw_graph(latent_points, edge_index, edge_attr, title="Gabriel Graph", save_dir="graphs"):
-    """
-    Draw a graph visualization of the latent space points and their connections
-
-    Args:
-        latent_points: Tensor of shape (num_points, 3) containing 3D coordinates
-        edge_index: Tensor of shape (2, num_edges) containing edge connections
-        edge_attr: Tensor of edge attributes (distances)
-        title: Title for the plot
-        save_dir: Directory to save the plots
-    """
-
-def train_model(model, dataloader, epochs, lr):
+def train_model(model, dataloader, epochs, lr, param_schema, save_path="model"):
     """Train with only reconstruction loss for better convergence"""
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -317,9 +302,9 @@ def train_model(model, dataloader, epochs, lr):
             print('='*50, 'Reconstructed', '='*50)
             print(torch.round(reconstructed[0], decimals=1))
             visualize_and_save_gabriel_graph(
-                latent_points=latent[0].detach().cpu(),
+                latent_points=latent_batch[0].detach().cpu(),
                 edge_index=edge_index_list[0].detach().cpu(),
-                attn_weights=attn_weights_list[0].detach().cpu(),
+                attn_weights=edge_attr_list[0].detach().cpu(),
                 epoch=epoch,
                 param_schema=param_schema
             )
@@ -387,7 +372,8 @@ def generate_sample_data(num_samples=256, batch_size=32):
         batch_size=batch_size,
         shuffle=True
     )
-def visualize_and_save_gabriel_graph(latent_points, edge_index, attn_weights, epoch, save_dir="graph_visualizations", param_schema=None):
+
+def visualize_and_save_gabriel_graph(latent_points, edge_index, attn_weights, epoch, save_dir="graphs", param_schema=None):
     """
     Визуализация и сохранение Gabriel-графа на диск.
 
@@ -529,7 +515,7 @@ def visualize_and_save_gabriel_graph(latent_points, edge_index, attn_weights, ep
     )
 
     ax.text(
-        1.02, 0.6, edge_table_text,
+        1.02, 0.3, edge_table_text,
         transform=ax.transAxes,
         fontsize=7,
         family='monospace',
@@ -572,6 +558,10 @@ def main():
         NodeDescriptor("landmark-2-rel-y", "landmark"),
         NodeDescriptor("landmark-3-rel-x", "landmark"),
         NodeDescriptor("landmark-3-rel-y", "landmark"),
+        NodeDescriptor("is_landmark_1_target", "target"),
+        NodeDescriptor("is_landmark_2_target", "target"),
+        NodeDescriptor("is_landmark_3_target", "target"),
+        NodeDescriptor("agent_type", "agent"),
     ]
 
     # Hyperparameters for training
@@ -580,8 +570,8 @@ def main():
         dataloader,
         epochs=300,
         lr=0.0025,
+        param_schema=param_schema,
         save_path=model_filename,
-        param_schema=param_schema
     )
 
     print(f"Training completed! Model saved as {model_filename}")
