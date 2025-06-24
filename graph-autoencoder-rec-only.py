@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pettingzoo.mpe import simple_speaker_listener_v4
 
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
 import networkx as nx
 import os
 from datetime import datetime
@@ -127,75 +128,78 @@ class ImprovedGraphAutoEncoder(nn.Module):
 
         return edge_index, edge_attr
 
-
     def beta_skeleton_graph(self, points, beta=1):
+        """
+            Построение beta-skeleton графа на PyTorch тензорах.
+
+            :param points: тензор shape (N, 2) или (N, D) с координатами точек
+            :param beta: параметр beta (1 - Gabriel graph)
+            :return: список рёбер [[i, j], ...] в виде Python списка (или можно вернуть тензор)
+            """
         n = points.shape[0]
         edges = []
 
         for i in range(n):
+            p1 = points[i]
             for j in range(i + 1, n):
-                p1, p2 = points[i], points[j]
-                d = np.linalg.norm(p1 - p2)
+                p2 = points[j]
+                d = torch.norm(p1 - p2)
 
-                if d < 1e-10:  # Skip identical points
+                if d < 1e-10:
                     continue
 
                 is_edge = True
 
-                if beta == 1:
-                    # Gabriel graph: check if any point lies inside the circle
-                    # with diameter p1-p2
+                if abs(beta - 1.0) < 1e-8:
+                    # Gabriel graph: проверяем, нет ли точки внутри окружности с диаметром p1-p2
                     center = (p1 + p2) / 2
                     radius = d / 2
 
                     for k in range(n):
-                        if k != i and k != j:
-                            pk = points[k]
-                            dist_to_center = np.linalg.norm(pk - center)
-                            if dist_to_center < radius:  # Strictly inside
-                                is_edge = False
-                                break
+                        if k == i or k == j:
+                            continue
+                        pk = points[k]
+                        dist_to_center = torch.norm(pk - center)
+                        if dist_to_center < radius:
+                            is_edge = False
+                            break
                 else:
-                    # General beta skeleton
                     if beta < 1e-5:
                         continue
 
-                    # For beta != 1, use the lune-based definition
-                    # Two circles of radius d/(2*beta) centered at points that are
-                    # distance d*beta/2 from the midpoint along the perpendicular
                     center = (p1 + p2) / 2
-                    direction = (p2 - p1) / d  # unit vector along edge
-                    perpendicular = np.array([-direction[1], direction[0]])  # perpendicular unit vector
+                    direction = (p2 - p1) / d
+                    perpendicular = torch.tensor([-direction[1], direction[0]], device=points.device)
 
-                    offset = d * np.sqrt(1/(4*beta**2) - 1/4) if beta > 1 else 0
+                    offset = 0.0
+                    if beta > 1:
+                        offset = d * torch.sqrt(1 / (4 * beta ** 2) - 1 / 4)
 
                     if beta > 1:
-                        # Two circle centers
                         c1 = center + offset * perpendicular
                         c2 = center - offset * perpendicular
                         radius = d / (2 * beta)
 
                         for k in range(n):
-                            if k != i and k != j:
-                                pk = points[k]
-                                # Point must be outside both circles
-                                if (np.linalg.norm(pk - c1) < radius or
-                                    np.linalg.norm(pk - c2) < radius):
-                                    is_edge = False
-                                    break
+                            if k == i or k == j:
+                                continue
+                            pk = points[k]
+                            if (torch.norm(pk - c1) < radius) or (torch.norm(pk - c2) < radius):
+                                is_edge = False
+                                break
                     else:  # beta < 1
-                        # Single circle
                         radius = d / (2 * beta)
                         for k in range(n):
-                            if k != i and k != j:
-                                pk = points[k]
-                                if np.linalg.norm(pk - center) > radius:
-                                    is_edge = False
-                                    break
+                            if k == i or k == j:
+                                continue
+                            pk = points[k]
+                            if torch.norm(pk - center) > radius:
+                                is_edge = False
+                                break
 
                 if is_edge:
                     edges.append([i, j])
-                    edges.append([j, i])  # bidirectional
+                    edges.append([j, i])  # двунаправленное ребро
 
         return edges
 
@@ -208,7 +212,6 @@ class ImprovedGraphAutoEncoder(nn.Module):
         latent_list = []
         edge_index_list = []
         edge_attr_list = []
-        attn_weights_list = []
 
         for idx in range(batch_size):
             # Encode each vector to latent vector
@@ -216,13 +219,9 @@ class ImprovedGraphAutoEncoder(nn.Module):
             latent = self.encoder(sample_input)
 
             # Create a betta-skeleton graph (special case - Gabriel Graph)
-            edge_index, edge_attr = self.create_gabriel_graph(latent)
-            #edge_index, edge_attr = self.create_gabriel_graph(graph_latent)
-
-            # Create a betta-skeleton graph (special case - Gabriel Graph)
-            graph_latent_np = latent.detach().cpu().numpy()
-            edges = self.beta_skeleton_graph(graph_latent_np)
-            edge_index = torch.tensor(edges, dtype=torch.long, device=batch.device).t()
+            # graph_latent_np = latent.detach().cpu().numpy()
+            edges = self.beta_skeleton_graph(latent)
+            edge_index = torch.tensor(edges, dtype=torch.long, device=latent.device).t()
             edge_attr = torch.norm(latent[edge_index[0]] - latent[edge_index[1]], dim=1, keepdim=True)
 
             # Create PyTorch Geometric Data object
@@ -295,7 +294,7 @@ def train_model(model, dataloader, epochs, lr, param_schema, save_path="model"):
 
             epoch_loss += loss.item()
 
-        if epoch % 100 == 0:
+        if epoch % 30 == 0:
             print(f'Epoch: {epoch}')
             print('='*50, 'Original', '='*50)
             print(torch.round(original[0], decimals=1))
@@ -416,22 +415,37 @@ def visualize_and_save_gabriel_graph(latent_points, edge_index, attn_weights, ep
         G.add_edge(src, tgt, weight=weight)
         edge_labels[(src, tgt)] = float(weight)
 
-    fig, ax = plt.subplots(figsize=(9, 6))
+    fig = plt.figure(figsize=(12, 8))
+    gs = fig.add_gridspec(
+        nrows=1,  # Одна строка
+        ncols=3,  # Три колонки
+        width_ratios=[1, 1, 1],  # Соотношение ширины: граф, таблица узлов, таблица рёбер
+        wspace=0.3  # Горизонтальный отступ
+    )
 
+    ax_graph = fig.add_subplot(gs[0, 0])  # Граф в первой колонке
+    ax_nodes = fig.add_subplot(gs[0, 1])  # Таблица узлов во второй колонке
+    ax_edges = fig.add_subplot(gs[0, 2])  # Таблица рёбер в третьей колонке
+
+    ax_graph.axis('off')
+    ax_graph.set_aspect('equal', adjustable='box')
+    ax_graph.set_title(f"Latent Graph — Epoch {epoch + 1}", fontsize=11)
+    ax_nodes.axis('off')
+    ax_edges.axis('off')
     # Рисуем ноды
     nx.draw_networkx_nodes(
         G,
         pos=positions,
         node_color=node_colors,
         node_size=60,
-        ax=ax,
+        ax=ax_graph,
         linewidths=0.8,
         edgecolors="black"
     )
 
     # Подписи над точками — выше и правее, мелко, без фона
     for i, (x, y) in positions.items():
-        ax.annotate(
+        ax_graph.annotate(
             str(i),
             (x, y),
             textcoords="offset points",
@@ -441,10 +455,10 @@ def visualize_and_save_gabriel_graph(latent_points, edge_index, attn_weights, ep
             color='black'
         )
 
-    nx.draw_networkx_edges(G, pos=positions, ax=ax, edge_color="#2fe94e", width=1.2)
+    nx.draw_networkx_edges(G, pos=positions, ax=ax_graph, edge_color="#2fe94e", width=1.2)
 
     # Draw MST
-    nx.draw_networkx_edges(mst, pos=positions, ax=ax, edge_color="#CA2171", width=1.6, style="dashed")
+    nx.draw_networkx_edges(mst, pos=positions, ax=ax_graph, edge_color="#CA2171", width=1.6, style="dashed")
 
     # for src, tgt in edges:
     #     x1, y1 = positions[src]
@@ -469,7 +483,7 @@ def visualize_and_save_gabriel_graph(latent_points, edge_index, attn_weights, ep
         for group, color in group_color_map.items() if group != "unknown"
     ]
 
-    ax.legend(
+    ax_graph.legend(
         handles=legend_elements,
         loc='upper center',
         bbox_to_anchor=(0.5, -0.08),  # под графиком
@@ -478,56 +492,76 @@ def visualize_and_save_gabriel_graph(latent_points, edge_index, attn_weights, ep
         frameon=False
     )
 
+    # Определяем ширину имени для визуального контроля (можно не обязательно)
     if param_schema:
         max_name_len = max(len(p.name) for p in param_schema)
     else:
         max_name_len = max(len(f"node_{i}") for i in range(len(latent_points)))
 
-    # Минимальная ширина имени, чтобы не было слишком узко
-    name_col_width = max(max_name_len, 10)
-    num_col_width = max(len(str(len(latent_points) - 1)), 3)  # ширина для номера узла
-
-    # Формируем заголовки с динамической шириной
-    header_nodes = f"Nodes:\n{'No.':<{num_col_width}} | {'Name':<{name_col_width}} |     X     |     Y    \n"
-    separator_nodes = "-" * (num_col_width + name_col_width + 24) + "\n"
-    node_table_text = header_nodes + separator_nodes
+    # Формируем данные для таблицы узлов (заголовок + строки)
+    node_table_data = []
+    node_table_data.append(["No.", "Name", "X", "Y"])
     for i in range(len(latent_points)):
         name = param_schema[i].name if param_schema else f"node_{i}"
         x_val = latent_points[i][0].item()
         y_val = latent_points[i][1].item()
-        node_table_text += f"{i:<{num_col_width}} | {name:<{name_col_width}} | {x_val:>8.3f} | {y_val:>8.3f}\n"
+        node_table_data.append([str(i), name, f"{x_val:.3f}", f"{y_val:.3f}"])
 
-    header_edges = f"Edges:\n{'From':<{name_col_width}} | {'To':<{name_col_width}} | Weight\n"
-    separator_edges = "-" * (name_col_width * 2 + 11) + "\n"
-    edge_table_text = header_edges + separator_edges
+    # Формируем данные для таблицы рёбер (заголовок + строки)
+    edge_table_data = []
+    edge_table_data.append(["From", "To", "Weight"])
     for (src, tgt), weight in edge_labels.items():
         src_name = param_schema[src].name if param_schema else f"node_{src}"
         tgt_name = param_schema[tgt].name if param_schema else f"node_{tgt}"
-        edge_table_text += f"{src_name:<{name_col_width}} | {tgt_name:<{name_col_width}} | {weight:>7.3f}\n"
+        edge_table_data.append([src_name, tgt_name, f"{weight:.3f}"])
 
-    ax.text(
-        1.02, 0.95, node_table_text,
-        transform=ax.transAxes,
-        fontsize=7,
-        family='monospace',
-        verticalalignment='top',
-        horizontalalignment='left'
+    def calculate_column_widths(data):
+        if not data:
+            return []
+
+        num_cols = len(data[0])
+        max_lens = [0] * num_cols
+
+        for row_idx, row in enumerate(data):
+            for col_idx, cell_value in enumerate(row):
+                max_lens[col_idx] = max(max_lens[col_idx], len(str(cell_value)))
+
+        total_len = sum(max_lens)
+        if total_len == 0:
+            return [1.0 / num_cols] * num_cols
+
+        col_widths = [((length / total_len) * 0.95) + (0.05 / num_cols) for length in max_lens]
+        sum_widths = sum(col_widths)
+        col_widths = [w / sum_widths for w in col_widths]
+
+        return col_widths
+
+    node_col_widths = calculate_column_widths(node_table_data)
+    edge_col_widths = calculate_column_widths(edge_table_data)
+
+        # Создаем таблицы внутри ax_table
+    table_nodes = ax_nodes.table(
+        cellText=node_table_data[1:],
+        colLabels=node_table_data[0],
+        loc="upper center",
+        cellLoc='center',
+        colWidths=node_col_widths
     )
+    table_nodes.auto_set_font_size(False)
+    table_nodes.set_fontsize(7)
 
-    ax.text(
-        1.02, 0.3, edge_table_text,
-        transform=ax.transAxes,
-        fontsize=7,
-        family='monospace',
-        verticalalignment='top',
-        horizontalalignment='left'
+    # Таблица рёбер
+    table_edges = ax_edges.table(
+        cellText=edge_table_data[1:],
+        colLabels=edge_table_data[0],
+        loc="upper center",
+        cellLoc='center',
+        colWidths=edge_col_widths
     )
+    table_edges.auto_set_font_size(False)
+    table_edges.set_fontsize(7)
 
-    ax.set_title(f"Latent Graph — Epoch {epoch + 1}", fontsize=11)
-    ax.axis('equal')
-    ax.axis('off')
-    plt.tight_layout(rect=[0, 0.05, 0.8, 1])
-
+    plt.tight_layout()
     filename = os.path.join(save_dir, f"epoch{epoch + 1:02d}.png")
     plt.savefig(filename, dpi=150, bbox_inches="tight")
     plt.close()
