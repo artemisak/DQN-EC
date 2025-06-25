@@ -1,3 +1,10 @@
+from dataclasses import dataclass
+from typing import List
+
+from matplotlib.patches import Circle
+from scipy.spatial import Voronoi, voronoi_plot_2d
+import matplotlib.patches as mpatches
+from dataclasses import dataclass
 import numpy as np
 import torch
 import torch.nn as nn
@@ -10,7 +17,6 @@ import matplotlib.pyplot as plt
 import networkx as nx
 import os
 from datetime import datetime
-
 
 # Determine device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -296,7 +302,7 @@ def draw_graph(latent_points, edge_index, edge_attr, title="Gabriel Graph", save
     return G
 
 
-def train_model(model, dataloader, epochs, lr, save_path="trained_model.pth"):
+def train_model(model, dataloader, epochs, lr, param_schema, save_path="trained_model.pth"):
     """Train with only reconstruction loss for better convergence"""
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -335,8 +341,13 @@ def train_model(model, dataloader, epochs, lr, save_path="trained_model.pth"):
             print(true_values[0])
             print('=' * 50, 'Reconstructed values', '=' * 50)
             print(predicted_values[0])
-            draw_graph(latent_batch[11], edge_index=edge_index_list[11], edge_attr=edge_attr_list[11],
-                      title=f"Training Epoch {epoch}", save_dir="training_graphs")
+            visualize_graph(
+                latent_points=latent_batch[11],
+                edge_index=edge_index_list[11],
+                edge_attr=edge_attr_list[11],
+                epoch=epoch,
+                param_schema=param_schema
+            )
 
         avg_loss = epoch_loss / len(dataloader)
         train_losses.append(avg_loss)
@@ -411,6 +422,202 @@ def generate_sample_data(num_samples=1024, batch_size=64):
         shuffle=True
     )
 
+@dataclass
+class NodeDescriptor:
+    name: str       # Например: "self_vel-x"
+    group: str      # Тип: "self_vel", "landmark"
+
+group_color_map = {
+    "self_vel": "#1f77b4",
+    "landmark": "#2ca02c",
+    "target": "#f54242",
+    "agent": "#8202fa",
+    "unknown": "#7f7f7f"
+}
+
+def visualize_graph(latent_points, edge_index, edge_attr, epoch, save_dir="graphs", param_schema=None):
+    """
+    Visualisation Graph
+
+    :param latent_points:
+    :param edge_index: (2, num_edges)
+    :param epoch:
+    :param save_dir:
+    :param
+    """
+    os.makedirs(save_dir, exist_ok=True)
+
+    G = nx.Graph()
+    positions = {}
+
+    coords = []
+    for i in range(latent_points.shape[0]):
+        x, y = latent_points[i][0].item(), latent_points[i][1].item()
+        G.add_node(i)
+        positions[i] = (x, y)
+        coords.append([x, y])
+
+    coords = np.array(coords)
+    edges = edge_index.t().cpu().numpy()
+    for src, tgt in edges:
+        G.add_edge(src, tgt)
+
+    mst = nx.minimum_spanning_tree(G)
+
+    node_colors = []
+    for i in range(len(latent_points)):
+        if param_schema:
+            group = param_schema[i].group
+        else:
+            group = "unknown"
+        color = group_color_map.get(group, group_color_map["unknown"])
+        node_colors.append(color)
+
+    weights = edge_attr.detach().cpu().numpy()
+    edge_labels = {}
+    for (src, tgt), weight in zip(edges, weights):
+        G.add_edge(src, tgt, weight=weight)
+        edge_labels[(src, tgt)] = float(weight)
+
+    fig = plt.figure(figsize=(12, 8))
+    gs = fig.add_gridspec(
+        nrows=1,
+        ncols=3,
+        width_ratios=[1, 1, 1],
+        wspace=0.3
+    )
+
+    ax_graph = fig.add_subplot(gs[0, 0])
+    ax_nodes = fig.add_subplot(gs[0, 1])
+    ax_edges = fig.add_subplot(gs[0, 2])
+
+    ax_graph.axis('off')
+    ax_graph.set_aspect('equal', adjustable='box')
+    ax_graph.set_title(f"Latent Graph — Epoch {epoch}", fontsize=11)
+    ax_nodes.axis('off')
+    ax_edges.axis('off')
+
+    nx.draw_networkx_nodes(
+        G,
+        pos=positions,
+        node_color=node_colors,
+        node_size=60,
+        ax=ax_graph,
+        linewidths=0.8,
+        edgecolors="black"
+    )
+
+    for i, (x, y) in positions.items():
+        ax_graph.annotate(
+            str(i),
+            (x, y),
+            textcoords="offset points",
+            xytext=(0, -10),
+            ha='center',
+            fontsize=7,
+            color='black'
+        )
+
+    nx.draw_networkx_edges(G, pos=positions, ax=ax_graph, edge_color="#2fe94e", width=1.2)
+
+    # Draw MST
+    nx.draw_networkx_edges(mst, pos=positions, ax=ax_graph, edge_color="#CA2171", width=1.6, style="dashed")
+
+    # for src, tgt in edges:
+    #     x1, y1 = positions[src]
+    #     x2, y2 = positions[tgt]
+
+    #     # Центр окружности — середина отрезка
+    #     center_x = (x1 + x2) / 2
+    #     center_y = (y1 + y2) / 2
+
+    #     # Радиус = половина расстояния между точками
+    #     radius = 0.5 * ((x1 - x2)**2 + (y1 - y2)**2)**0.5
+
+    #     circle = Circle((center_x, center_y), radius, edgecolor='#E94F31', facecolor='none', linestyle='--', linewidth=1.5)
+    #     ax.add_patch(circle)
+
+    # vor = Voronoi(coords)
+    # voronoi_plot_2d(vor, ax=ax, show_vertices=False, line_colors='orange', line_width=1.5, line_alpha=0.6, point_size=0)
+
+    legend_elements = [
+        mpatches.Patch(color=color, label=group)
+        for group, color in group_color_map.items() if group != "unknown"
+    ]
+
+    ax_graph.legend(
+        handles=legend_elements,
+        loc='upper center',
+        bbox_to_anchor=(0.5, -0.08),  # под графиком
+        ncol=len(legend_elements),
+        fontsize=8,
+        frameon=False
+    )
+
+    node_table_data = []
+    node_table_data.append(["No.", "Name", "X", "Y"])
+    for i in range(len(latent_points)):
+        name = param_schema[i].name if param_schema else f"node_{i}"
+        x_val = latent_points[i][0].item()
+        y_val = latent_points[i][1].item()
+        node_table_data.append([str(i), name, f"{x_val:.3f}", f"{y_val:.3f}"])
+
+    edge_table_data = []
+    edge_table_data.append(["From", "To", "Weight"])
+    for (src, tgt), weight in edge_labels.items():
+        src_name = param_schema[src].name if param_schema else f"node_{src}"
+        tgt_name = param_schema[tgt].name if param_schema else f"node_{tgt}"
+        edge_table_data.append([src_name, tgt_name, f"{weight:.3f}"])
+
+    def calculate_column_widths(data):
+        if not data:
+            return []
+
+        num_cols = len(data[0])
+        max_lens = [0] * num_cols
+
+        for row_idx, row in enumerate(data):
+            for col_idx, cell_value in enumerate(row):
+                max_lens[col_idx] = max(max_lens[col_idx], len(str(cell_value)))
+
+        total_len = sum(max_lens)
+        if total_len == 0:
+            return [1.0 / num_cols] * num_cols
+
+        col_widths = [((length / total_len) * 0.95) + (0.05 / num_cols) for length in max_lens]
+        sum_widths = sum(col_widths)
+        col_widths = [w / sum_widths for w in col_widths]
+
+        return col_widths
+
+    node_col_widths = calculate_column_widths(node_table_data)
+    edge_col_widths = calculate_column_widths(edge_table_data)
+
+    table_nodes = ax_nodes.table(
+        cellText=node_table_data[1:],
+        colLabels=node_table_data[0],
+        loc="upper center",
+        cellLoc='center',
+        colWidths=node_col_widths
+    )
+    table_nodes.auto_set_font_size(False)
+    table_nodes.set_fontsize(7)
+
+    table_edges = ax_edges.table(
+        cellText=edge_table_data[1:],
+        colLabels=edge_table_data[0],
+        loc="upper center",
+        cellLoc='center',
+        colWidths=edge_col_widths
+    )
+    table_edges.auto_set_font_size(False)
+    table_edges.set_fontsize(7)
+
+    plt.tight_layout()
+    filename = os.path.join(save_dir, f"epoch{epoch + 1:02d}.png")
+    plt.savefig(filename, dpi=150, bbox_inches="tight")
+    plt.close()
+
 # Main function
 def main():
     # Create directories for saving outputs
@@ -427,12 +634,27 @@ def main():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     model_filename = f"graph_autoencoder_{timestamp}.pth"
 
+    param_schema: List[NodeDescriptor] = [
+        NodeDescriptor("vel-x", "self_vel"),
+        NodeDescriptor("vel-y", "self_vel"),
+        NodeDescriptor("landmark-1-rel-x", "landmark"),
+        NodeDescriptor("landmark-1-rel-y", "landmark"),
+        NodeDescriptor("landmark-2-rel-x", "landmark"),
+        NodeDescriptor("landmark-2-rel-y", "landmark"),
+        NodeDescriptor("landmark-3-rel-x", "landmark"),
+        NodeDescriptor("landmark-3-rel-y", "landmark"),
+        NodeDescriptor("is_landmark_1_target", "target"),
+        NodeDescriptor("is_landmark_2_target", "target"),
+        NodeDescriptor("is_landmark_3_target", "target"),
+        NodeDescriptor("agent_type", "agent"),
+    ]
     # Hyperparameters for training
     train_model(
         model,
         dataloader,
         epochs=30,
         lr=0.0025,
+        param_schema=param_schema,
         save_path=model_filename
     )
     
