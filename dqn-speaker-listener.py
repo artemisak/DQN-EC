@@ -10,7 +10,6 @@ import torch.nn.functional as F
 import torch.optim as optim
 import tyro
 from typing import Optional
-from torch.utils.tensorboard import SummaryWriter
 from collections import deque, namedtuple
 from pettingzoo.mpe import simple_speaker_listener_v4
 
@@ -60,19 +59,19 @@ class Args:
     """the user or org name of the model repository from the Hugging Face Hub"""
 
     # Algorithm specific arguments
-    total_timesteps: int = 80000
+    total_timesteps: int = 300000
     """total timesteps of the experiments"""
-    learning_rate: float = 2.5e-4
+    learning_rate: float = 1e-3
     """the learning rate of the optimizer"""
-    buffer_size: int = 10000
+    buffer_size: int = 51200
     """the replay memory buffer size"""
     gamma: float = 0.99
     """the discount factor gamma"""
-    tau: float = 1.0
+    tau: float = 0.1
     """the target network update rate"""
-    target_network_frequency: int = 500
+    target_network_frequency: int = 50
     """the timesteps it takes to update the target network"""
-    batch_size: int = 128
+    batch_size: int = 256
     """the batch size of sample from the reply memory"""
     start_e: float = 1.0
     """the starting epsilon for exploration"""
@@ -80,47 +79,112 @@ class Args:
     """the ending epsilon for exploration"""
     exploration_fraction: float = 0.5
     """the fraction of `total-timesteps` it takes from start-e to go end-e"""
-    learning_starts: int = 10000
+    learning_starts: int = 5120
     """timestep to start learning"""
-    train_frequency: int = 10
+    train_frequency: int = 5
     """the frequency of training"""
 
 
-# QNetwork for the speaker agent
+# Improved QNetwork for the speaker agent
+# Speaker observation space: [goal_id]
+# Speaker action space: [say_0, say_1, ..., say_9]
 class SpeakerQNetwork(nn.Module):
     def __init__(self, obs_dim, action_dim):
         super().__init__()
-        self.network = nn.Sequential(
+        # Enhanced architecture for better message encoding
+        self.feature_extractor = nn.Sequential(
             nn.Linear(obs_dim, 128),
             nn.ReLU(),
             nn.Linear(128, 128),
             nn.ReLU(),
-            nn.Linear(128, action_dim)
         )
+        
+        # Message selection head - more direct path for key information
+        self.action_head = nn.Linear(128, action_dim)
+        
+        # Better initialization for more stable learning
+        self._init_weights()
+
+    def _init_weights(self):
+        """Initialize network weights for better stability"""
+        for layer in self.feature_extractor:
+            if isinstance(layer, nn.Linear):
+                nn.init.orthogonal_(layer.weight, gain=np.sqrt(2))
+                nn.init.constant_(layer.bias, 0.0)
+        nn.init.orthogonal_(self.action_head.weight, gain=np.sqrt(2))
+        nn.init.constant_(self.action_head.bias, 0.0)
 
     def forward(self, x):
-        return self.network(x)
+        features = self.feature_extractor(x)
+        return self.action_head(features)
 
 
-# QNetwork for the listener agent
+# Improved QNetwork for the listener agent
+# Listener observation space: [self_vel, all_landmark_rel_positions, communication]
+# Listener action space: [no_action, move_left, move_right, move_down, move_up]
 class ListenerQNetwork(nn.Module):
-    def __init__(self, obs_dim, action_dim):
+    def __init__(self, obs_dim, action_dim, comm_dim):
         super().__init__()
-        self.network = nn.Sequential(
-            nn.Linear(obs_dim, 128),
+        self.comm_dim = comm_dim
+        self.other_dim = obs_dim - comm_dim
+        
+        # Process communication signal with special attention
+        self.comm_net = nn.Sequential(
+            nn.Linear(self.comm_dim, 64),
             nn.ReLU(),
-            nn.Linear(128, 128),
+            nn.Linear(64, 128),
+            nn.ReLU(),
+        )
+        
+        # Process positional and velocity information
+        self.pos_vel_net = nn.Sequential(
+            nn.Linear(self.other_dim, 64),
+            nn.ReLU(),
+            nn.Linear(64, 128),
+            nn.ReLU(),
+        )
+        
+        # Final action selection from combined information
+        self.combined_net = nn.Sequential(
+            nn.Linear(256, 128),
             nn.ReLU(),
             nn.Linear(128, action_dim)
         )
+        
+        # Initialize all weights
+        self._init_weights()
 
+    def _init_weights(self):
+        """Initialize network weights for better stability"""
+        for net in [self.comm_net, self.pos_vel_net, self.combined_net]:
+            for layer in net:
+                if isinstance(layer, nn.Linear):
+                    nn.init.orthogonal_(layer.weight, gain=np.sqrt(2))
+                    nn.init.constant_(layer.bias, 0.0)
+        
     def forward(self, x):
-        return self.network(x)
+        # Split observation into communication and position/velocity components
+        comm = x[:, -self.comm_dim:]  # Last comm_dim elements are communication
+        pos_vel = x[:, :-self.comm_dim]  # The rest are position and velocity
+        
+        # Process components separately
+        comm_features = self.comm_net(comm)
+        pos_vel_features = self.pos_vel_net(pos_vel)
+        
+        # Combine and decide action
+        combined = torch.cat([comm_features, pos_vel_features], dim=1)
+        return self.combined_net(combined)
 
 
 def linear_schedule(start_e, end_e, duration, t):
     slope = (end_e - start_e) / duration
     return max(slope * t + start_e, end_e)
+
+
+def update_target_network(target_net, online_net, tau):
+    """Soft update of target network parameters: θ′ ← τθ + (1 − τ)θ′"""
+    for target_param, param in zip(target_net.parameters(), online_net.parameters()):
+        target_param.data.copy_(tau * param.data + (1.0 - tau) * target_param.data)
 
 
 def main():
@@ -139,12 +203,6 @@ def main():
             monitor_gym=True,
             save_code=True,
         )
-
-    writer = SummaryWriter(f"runs/{run_name}")
-    writer.add_text(
-        "hyperparameters",
-        "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
-    )
 
     # Seeding
     random.seed(args.seed)
@@ -168,9 +226,13 @@ def main():
 
     listener_obs_dim = np.prod(env.observation_space(listener_agent).shape)
     listener_action_dim = env.action_space(listener_agent).n
+    
+    # Communication dimension is based on speaker action space
+    comm_dim = speaker_action_dim
 
     print(f"Speaker obs dim: {speaker_obs_dim}, action dim: {speaker_action_dim}")
     print(f"Listener obs dim: {listener_obs_dim}, action dim: {listener_action_dim}")
+    print(f"Communication dimension: {comm_dim}")
 
     # Create Q-networks for each agent
     speaker_q_net = SpeakerQNetwork(speaker_obs_dim, speaker_action_dim).to(device)
@@ -178,8 +240,8 @@ def main():
     speaker_target_net.load_state_dict(speaker_q_net.state_dict())
     speaker_optimizer = optim.Adam(speaker_q_net.parameters(), lr=args.learning_rate)
 
-    listener_q_net = ListenerQNetwork(listener_obs_dim, listener_action_dim).to(device)
-    listener_target_net = ListenerQNetwork(listener_obs_dim, listener_action_dim).to(device)
+    listener_q_net = ListenerQNetwork(listener_obs_dim, listener_action_dim, comm_dim).to(device)
+    listener_target_net = ListenerQNetwork(listener_obs_dim, listener_action_dim, comm_dim).to(device)
     listener_target_net.load_state_dict(listener_q_net.state_dict())
     listener_optimizer = optim.Adam(listener_q_net.parameters(), lr=args.learning_rate)
 
@@ -258,11 +320,6 @@ def main():
         # Check if episode ended
         done = any(terminations.values()) or any(truncations.values())
         if done:
-            # Log episode metrics
-            writer.add_scalar("charts/episode_reward", episode_reward, global_step)
-            writer.add_scalar("charts/episode_length", episode_length, global_step)
-            writer.add_scalar("charts/speaker_reward", rewards[speaker_agent], global_step)
-            writer.add_scalar("charts/listener_reward", rewards[listener_agent], global_step)
 
             episode_rewards.append(episode_reward)
             episode_lengths.append(episode_length)
@@ -276,7 +333,7 @@ def main():
                     "listener_reward": rewards[listener_agent],
                     "global_step": global_step,
                     "epsilon": epsilon
-                })
+                }, step=global_step)
 
                 # Log action distributions every 10 episodes
                 if np.sum(speaker_actions_hist) > 0:
@@ -301,7 +358,7 @@ def main():
                             "action", "probability",
                             title="Listener Action Distribution"
                         )
-                    })
+                    }, step=global_step)
 
             # Reset episode metrics
             episode_reward = 0
@@ -341,19 +398,19 @@ def main():
                 # Update speaker network
                 speaker_optimizer.zero_grad()
                 speaker_loss.backward()
+                # Add gradient clipping for stability
+                torch.nn.utils.clip_grad_norm_(speaker_q_net.parameters(), max_norm=1.0)
                 speaker_optimizer.step()
 
                 # Log speaker metrics
                 if global_step % 100 == 0:
-                    writer.add_scalar("losses/speaker_loss", speaker_loss.item(), global_step)
-                    writer.add_scalar("values/speaker_q_values", current_q_values.mean().item(), global_step)
 
                     if args.track:
                         wandb.log({
                             "speaker_loss": speaker_loss.item(),
                             "speaker_q_values": current_q_values.mean().item(),
                             "global_step": global_step
-                        })
+                        }, step=global_step)
 
             # Train listener agent if enough samples
             if len(listener_buffer) >= args.batch_size:
@@ -380,30 +437,27 @@ def main():
                 # Update listener network
                 listener_optimizer.zero_grad()
                 listener_loss.backward()
+                # Add gradient clipping for stability
+                torch.nn.utils.clip_grad_norm_(listener_q_net.parameters(), max_norm=1.0)
                 listener_optimizer.step()
 
                 # Log listener metrics
                 if global_step % 100 == 0:
-                    writer.add_scalar("losses/listener_loss", listener_loss.item(), global_step)
-                    writer.add_scalar("values/listener_q_values", current_q_values.mean().item(), global_step)
 
                     if args.track:
                         wandb.log({
                             "listener_loss": listener_loss.item(),
                             "listener_q_values": current_q_values.mean().item(),
                             "global_step": global_step
-                        })
+                        }, step=global_step)
 
             # Log general training metrics
             if global_step % 100 == 0:
-                writer.add_scalar("charts/epsilon", epsilon, global_step)
-                writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
                 # Performance over time
                 if len(episode_rewards) > 0:
                     window_size = min(10, len(episode_rewards))
                     avg_reward = np.mean(episode_rewards[-window_size:])
-                    writer.add_scalar("charts/avg_reward_last_10", avg_reward, global_step)
 
                     if args.track:
                         wandb.log({
@@ -419,17 +473,15 @@ def main():
                                 "reward", "episode_length",
                                 title="Communication Success vs Episode Length"
                             )
-                        })
+                        }, step=global_step)
 
-        # Update target networks
+        # Update target networks with soft updates
         if global_step % args.target_network_frequency == 0:
             # Update speaker target network
-            for target_param, param in zip(speaker_target_net.parameters(), speaker_q_net.parameters()):
-                target_param.data.copy_(args.tau * param.data + (1.0 - args.tau) * target_param.data)
-
+            update_target_network(speaker_target_net, speaker_q_net, args.tau)
+            
             # Update listener target network
-            for target_param, param in zip(listener_target_net.parameters(), listener_q_net.parameters()):
-                target_param.data.copy_(args.tau * param.data + (1.0 - args.tau) * target_param.data)
+            update_target_network(listener_target_net, listener_q_net, args.tau)
 
     # Save models
     if args.save_model:
@@ -444,12 +496,13 @@ def main():
             "speaker_action_dim": speaker_action_dim,
             "listener_obs_dim": listener_obs_dim,
             "listener_action_dim": listener_action_dim,
+            "comm_dim": comm_dim,
             "time": time.time()
         }
         np.save(f"models/{run_name}/metadata.npy", metadata)
 
     env.close()
-    writer.close()
+
     if args.track:
         wandb.finish()
 

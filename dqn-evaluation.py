@@ -1,103 +1,92 @@
 import os
 import numpy as np
 import torch
-import matplotlib.pyplot as plt
+import torch.nn as nn
 from pettingzoo.mpe import simple_speaker_listener_v4
 
 
 # Import model definitions from our implementation
 # These classes are identical to those in our main script
-class SpeakerQNetwork(torch.nn.Module):
+class SpeakerQNetwork(nn.Module):
     def __init__(self, obs_dim, action_dim):
         super().__init__()
         # Enhanced architecture for better message encoding
-        self.feature_extractor = torch.nn.Sequential(
-            torch.nn.Linear(obs_dim, 128),
-            torch.nn.ReLU(),
-            torch.nn.Linear(128, 128),
-            torch.nn.ReLU(),
+        self.feature_extractor = nn.Sequential(
+            nn.Linear(obs_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, 128),
+            nn.ReLU(),
         )
-        
+
         # Message selection head - more direct path for key information
-        self.action_head = torch.nn.Linear(128, action_dim)
-        
+        self.action_head = nn.Linear(128, action_dim)
+
         # Better initialization for more stable learning
         self._init_weights()
 
     def _init_weights(self):
         """Initialize network weights for better stability"""
         for layer in self.feature_extractor:
-            if isinstance(layer, torch.nn.Linear):
-                torch.nn.init.orthogonal_(layer.weight, gain=1.0)
-                torch.nn.init.constant_(layer.bias, 0.0)
-        
-        torch.nn.init.orthogonal_(self.action_head.weight, gain=0.01)
-        torch.nn.init.constant_(self.action_head.bias, 0.0)
+            if isinstance(layer, nn.Linear):
+                nn.init.orthogonal_(layer.weight, gain=np.sqrt(2))
+                nn.init.constant_(layer.bias, 0.0)
+        nn.init.orthogonal_(self.action_head.weight, gain=np.sqrt(2))
+        nn.init.constant_(self.action_head.bias, 0.0)
 
     def forward(self, x):
         features = self.feature_extractor(x)
         return self.action_head(features)
 
 
-class ListenerQNetwork(torch.nn.Module):
-    def __init__(self, obs_dim, action_dim, comm_dim=10):
+class ListenerQNetwork(nn.Module):
+    def __init__(self, obs_dim, action_dim, comm_dim):
         super().__init__()
-        # Communication dimension is 10 (one-hot encoded say_0 to say_9)
         self.comm_dim = comm_dim
         self.other_dim = obs_dim - comm_dim
-        
+
         # Process communication signal with special attention
-        self.comm_net = torch.nn.Sequential(
-            torch.nn.Linear(self.comm_dim, 64),
-            torch.nn.ReLU(),
-            torch.nn.Linear(64, 128),
-            torch.nn.ReLU(),
+        self.comm_net = nn.Sequential(
+            nn.Linear(self.comm_dim, 64),
+            nn.ReLU(),
+            nn.Linear(64, 128),
+            nn.ReLU(),
         )
-        
+
         # Process positional and velocity information
-        self.pos_vel_net = torch.nn.Sequential(
-            torch.nn.Linear(self.other_dim, 64),
-            torch.nn.ReLU(),
-            torch.nn.Linear(64, 128),
-            torch.nn.ReLU(),
+        self.pos_vel_net = nn.Sequential(
+            nn.Linear(self.other_dim, 64),
+            nn.ReLU(),
+            nn.Linear(64, 128),
+            nn.ReLU(),
         )
-        
+
         # Final action selection from combined information
-        self.combined_net = torch.nn.Sequential(
-            torch.nn.Linear(256, 128),
-            torch.nn.ReLU(),
-            torch.nn.Linear(128, action_dim)
+        self.combined_net = nn.Sequential(
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Linear(128, action_dim)
         )
-        
+
         # Initialize all weights
         self._init_weights()
 
     def _init_weights(self):
         """Initialize network weights for better stability"""
-        for net in [self.comm_net, self.pos_vel_net]:
+        for net in [self.comm_net, self.pos_vel_net, self.combined_net]:
             for layer in net:
-                if isinstance(layer, torch.nn.Linear):
-                    torch.nn.init.orthogonal_(layer.weight, gain=1.0)
-                    torch.nn.init.constant_(layer.bias, 0.0)
-        
-        for i, layer in enumerate(self.combined_net):
-            if isinstance(layer, torch.nn.Linear):
-                if i == len(self.combined_net) - 1:
-                    # Last layer with smaller weights
-                    torch.nn.init.orthogonal_(layer.weight, gain=0.01)
-                else:
-                    torch.nn.init.orthogonal_(layer.weight, gain=1.0)
-                torch.nn.init.constant_(layer.bias, 0.0)
+                if isinstance(layer, nn.Linear):
+                    nn.init.orthogonal_(layer.weight, gain=np.sqrt(2))
+                    nn.init.constant_(layer.bias, 0.0)
 
     def forward(self, x):
         # Split observation into communication and position/velocity components
         comm = x[:, -self.comm_dim:]  # Last comm_dim elements are communication
         pos_vel = x[:, :-self.comm_dim]  # The rest are position and velocity
-        
+
         # Process components separately
         comm_features = self.comm_net(comm)
         pos_vel_features = self.pos_vel_net(pos_vel)
-        
+
         # Combine and decide action
         combined = torch.cat([comm_features, pos_vel_features], dim=1)
         return self.combined_net(combined)
@@ -298,36 +287,6 @@ def evaluate():
         percentage = (message_counts[i] / message_counts.sum()) * 100 if message_counts.sum() > 0 else 0
         print(f"  Message {i}: {message_counts[i]} times ({percentage:.1f}%)")
     
-    # Visualize message distribution
-    plt.figure(figsize=(10, 6))
-    plt.bar(range(speaker_action_dim), message_counts)
-    plt.xlabel('Message ID')
-    plt.ylabel('Frequency')
-    plt.title('Message Usage Distribution')
-    plt.xticks(range(speaker_action_dim))
-    plt.savefig('message_distribution.png')
-    plt.close()
-    
-    # Visualize reward distribution
-    plt.figure(figsize=(10, 6))
-    plt.hist(rewards, bins=min(10, num_episodes))
-    plt.xlabel('Episode Reward')
-    plt.ylabel('Count')
-    plt.title('Reward Distribution')
-    plt.savefig('reward_distribution.png')
-    plt.close()
-    
-    # If we have distances, visualize them too
-    if distances:
-        plt.figure(figsize=(10, 6))
-        plt.hist(distances, bins=min(10, len(distances)))
-        plt.xlabel('Final Distance to Target')
-        plt.ylabel('Count')
-        plt.title('Distance Distribution')
-        plt.savefig('distance_distribution.png')
-        plt.close()
-        
-    print("Visualizations saved as PNG files.")
     env.close()
 
 
