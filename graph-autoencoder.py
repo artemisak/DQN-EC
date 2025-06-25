@@ -315,7 +315,7 @@ def train_model(model, dataloader, epochs, lr, param_schema, save_path="trained_
         model.train()
         epoch_loss = 0.0
 
-        for _, (batch, inv_perms) in enumerate(dataloader):
+        for _, (batch,) in enumerate(dataloader):
 
             # Forward pass
             true_distribution, true_values, predicted_logits, predicted_values, latent_batch, edge_index_list, edge_attr_list = model(batch)
@@ -332,11 +332,6 @@ def train_model(model, dataloader, epochs, lr, param_schema, save_path="trained_
             epoch_loss += loss.item()
 
         if (epoch % 5 == 0) or (epoch == epochs - 1):
-            index_to_visualize = 11
-            original_order = inv_perms[index_to_visualize]
-            reordered_latent = latent_batch[index_to_visualize][original_order]
-            reordered_edges = edge_index_list[index_to_visualize]
-            reordered_attrs = edge_attr_list[index_to_visualize]
             print(f'Epoch: {epoch}')
             print('='*50, 'Original labels', '='*50)
             print(F.softmax(true_distribution[0], dim=-1))
@@ -346,12 +341,23 @@ def train_model(model, dataloader, epochs, lr, param_schema, save_path="trained_
             print(true_values[0])
             print('=' * 50, 'Reconstructed values', '=' * 50)
             print(predicted_values[0])
+
+            idx = 11
+            obs = batch[idx]
+            variable_order = []
+
+            for row in obs:
+                key = tuple(row[:4].int().tolist())
+                var_id = GRAY_INVERTED_MAPPING.get(key, None)
+                variable_order.append(var_id)
+            sorted_schema = [param_schema[i - 1] for i in variable_order]
+
             visualize_graph(
-                latent_points=reordered_latent,
-                edge_index=reordered_edges,
-                edge_attr=reordered_attrs,
+                latent_points=latent_batch[idx],
+                edge_index=edge_index_list[idx],
+                edge_attr=edge_attr_list[idx],
                 epoch=epoch,
-                param_schema=param_schema
+                param_schema=sorted_schema
             )
 
         avg_loss = epoch_loss / len(dataloader)
@@ -386,7 +392,6 @@ def generate_sample_data(num_samples=1024, batch_size=64):
     env = simple_speaker_listener_v4.parallel_env(max_cycles=num_samples)
     env.reset()
     observations = []
-    permutations = []
     
     def create_observation_pair(message):
         """Create both observation variants for a message"""
@@ -406,32 +411,24 @@ def generate_sample_data(num_samples=1024, batch_size=64):
         obs2[9:, 4] = torch.tensor(message[8:])  # target flags
 
         perm = torch.randperm(len(GRAY_FORWARD_MAPPING))
-        inv_perm = torch.argsort(perm)
         obs1 = obs1[perm]
         obs2 =  obs2[perm]
 
-        return [(obs1, inv_perm), (obs2, inv_perm)]
-
+        return [obs1, obs2]
 
     while env.agents and len(observations) < num_samples:
         actions = {agent: env.action_space(agent).sample() for agent in env.agents}
         obs, *_ = env.step(actions)
-        pairs = create_observation_pair(obs['listener_0'])
-
-        for obs_tensor, inv_perm in pairs:
-            observations.append(obs_tensor)
-            permutations.append(inv_perm)
+        observations.extend(create_observation_pair(obs['listener_0']))
     
     env.close()
 
     observations = torch.stack(observations)
-    permutations = torch.stack(permutations)
     perm = torch.randperm(len(observations))
     observations = observations[perm]
-    permutations = permutations[perm]
 
     return torch.utils.data.DataLoader(
-        torch.utils.data.TensorDataset(observations.to(device), permutations.to(device)),
+        torch.utils.data.TensorDataset(observations.to(device)),
         batch_size=batch_size,
         shuffle=True
     )
