@@ -1,24 +1,56 @@
-import os
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.optim as optim
-import numpy as np
-import matplotlib.pyplot as plt
 from torch_geometric.nn import GATv2Conv
 from torch_geometric.data import Data
+from pettingzoo.mpe import simple_speaker_listener_v4
+
+import matplotlib.pyplot as plt
+import networkx as nx
+import os
+from datetime import datetime
 
 
 # Determine device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
-class GraphAutoEncoder(nn.Module):
-    def __init__(self, input_dim=3, hidden_dim=64, output_dim=3):
+GRAY_FORWARD_MAPPING = {
+    1: [0, 0, 0, 0], # agent_type
+    2: [0, 0, 0, 1], # self_velocity_x
+    3: [0, 0, 1, 1], # self_velocity_y
+    4: [0, 0, 1, 0], # landmark_1_rel_x
+    5: [0, 1, 1, 0], # landmark_1_rel_y
+    6: [0, 1, 1, 1], # landmark_2_rel_x
+    7: [0, 1, 0, 1], # landmark_2_rel_y
+    8: [0, 1, 0, 0], # landmark_3_rel_x
+    9: [1, 1, 0, 0], # landmark_3_rel_y
+    10: [1, 1, 0, 1], # landmark_1_is_target
+    11: [1, 1, 1, 1], # landmark_2_is_target
+    12: [1, 1, 1, 0] # landmark_3_is_target
+}
 
+GRAY_INVERTED_MAPPING = {
+    (0, 0, 0, 0): 1,
+    (0, 0, 0, 1): 2,
+    (0, 0, 1, 1): 3,
+    (0, 0, 1, 0): 4,
+    (0, 1, 1, 0): 5,
+    (0, 1, 1, 1): 6,
+    (0, 1, 0, 1): 7,
+    (0, 1, 0, 0): 8,
+    (1, 1, 0, 0): 9,
+    (1, 1, 0, 1): 10,
+    (1, 1, 1, 1): 11,
+    (1, 1, 1, 0): 12
+}
+
+class GraphAutoEncoder(nn.Module):
+    def __init__(self, input_dim=5, output_dim=3, hidden_dim=64):
         super(GraphAutoEncoder, self).__init__()
-        
-        # Encoder MPL
+
+        # Encoder MLP
         self.encoder = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
             nn.ReLU(),
@@ -26,47 +58,37 @@ class GraphAutoEncoder(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_dim, output_dim)
         )
-        
-        # GCN layers
-        self.gcn1 = GATv2Conv(in_channels=1, out_channels=hidden_dim, edge_dim=1)
-        self.gcn2 = GATv2Conv(in_channels=hidden_dim, out_channels=output_dim, edge_dim=1)
-        
-        # Decoder MLP
-        self.decoder = nn.Sequential(
-            nn.Linear(output_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, output_dim)
-        )
-    
-    def preprocess(self, x):
-        """
-        Transform (batch_size, 8) to (batch_size, 8, 3) where each vector is [agent_type, index, value]
-        """
-        batch_size = x.size(0)
-        preprocessed = torch.zeros(batch_size, 8, 3, device=x.device)
-        
-        for i in range(8):
-            preprocessed[:, i, 0] = 0.0  # Agent type
-            preprocessed[:, i, 1] = float(i)  # Position/index
-            preprocessed[:, i, 2] = x[:, i]  # Agent's observation value
-        
-        return preprocessed
+
+        self.encoder.apply(self.kaiming_init)
+
+        # Shared GAT layers
+        self.gcn1 = GATv2Conv(in_channels=1, out_channels=hidden_dim)
+        self.gcn2 = GATv2Conv(in_channels=hidden_dim, out_channels=hidden_dim)
+
+        # Label prediction
+        self.gcn3 = GATv2Conv(in_channels=hidden_dim, out_channels=hidden_dim)
+        self.label_head = nn.Linear(hidden_dim, 4)
+
+        # Value prediction
+        self.gcn4 = GATv2Conv(in_channels=hidden_dim, out_channels=hidden_dim)
+        self.value_head = nn.Linear(hidden_dim, 1)
+
+        # Skip connection layer
+        self.skip_connection = nn.Linear(output_dim, hidden_dim)
+
+        # Alpha for the skip connection
+        self.alpha = 0.1
+
+
+    def kaiming_init(self, m):
+        """Helper method for Kaiming initialization"""
+        if isinstance(m, nn.Linear):
+            nn.init.kaiming_uniform_(m.weight, mode='fan_in', nonlinearity='relu')
+            nn.init.zeros_(m.bias)
+
 
     def create_gabriel_graph(self, points):
-        """
-        Create a Gabriel graph from 2D points
-        Gabriel graph: points i and j have an edge if no other point is inside
-        the circle with diameter (i,j)
-
-        Args:
-            points: tensor of shape (num_points, 2)
-
-        Returns:
-            edge_index: tensor of shape (2, num_edges) for PyTorch Geometric
-            edge_attr: tensor of shape (num_edges, 1) with Euclidean distances
-        """
+        """Create Gabriel graph with minimal preprocessing to preserve information"""
         num_points = points.shape[0]
         edge_indices = []
         edge_attrs = []
@@ -88,14 +110,11 @@ class GraphAutoEncoder(nn.Module):
                             break
 
                 if is_gabriel:
-                    p1, p2 = points[i], points[j]
-                    dist = torch.norm(p1 - p2).item()
-
+                    dist = torch.norm(points[i] - points[j])
                     edge_indices.append([i, j])
                     edge_indices.append([j, i])
-
-                    edge_attrs.append([dist])
-                    edge_attrs.append([dist])
+                    edge_attrs.append(dist)
+                    edge_attrs.append(dist)
 
         # Ensure there's at least one edge
         if not edge_indices:
@@ -105,500 +124,319 @@ class GraphAutoEncoder(nn.Module):
             min_dist, min_indices = torch.min(distances + ~mask * 1e10, dim=1)
             min_dist_idx = torch.argmin(min_dist)
             min_pair_idx = min_indices[min_dist_idx]
-            dist = torch.norm(points[min_dist_idx] - points[min_pair_idx]).item()
+            dist = torch.norm(points[min_dist_idx] - points[min_pair_idx])
 
             edge_indices.append([int(min_dist_idx), int(min_pair_idx)])
             edge_indices.append([int(min_pair_idx), int(min_dist_idx)])
-            edge_attrs.append([dist])
-            edge_attrs.append([dist])
+            edge_attrs.append(dist)
+            edge_attrs.append(dist)
 
         # Convert to tensors
         if edge_indices:
             edge_index = torch.tensor(edge_indices, dtype=torch.long, device=points.device).t()
-            edge_attr = torch.tensor(edge_attrs, dtype=torch.float, device=points.device)
+            edge_attr = torch.stack(edge_attrs)
         else:
             edge_index = torch.zeros((2, 0), dtype=torch.long, device=points.device)
             edge_attr = torch.zeros((0, 1), dtype=torch.float, device=points.device)
 
         return edge_index, edge_attr
-    
-    def forward(self, x):
-        batch_size = x.size(0)
-        
-        # Step 1: Preprocess input from (batch_size, 8) to (batch_size, 8, 3)
-        x_preprocessed = self.preprocess(x)
-        
-        # Process each sample in the batch individually
-        reconstructed_list = []
+
+    def forward(self, batch):
+
+        reconstructed_labels = []
+        reconstructed_values = []
         latent_list = []
         edge_index_list = []
-        
-        for b in range(batch_size):
-            # Step 2: Encode each (3) vector to (2) vector
-            sample_input = x_preprocessed[b]  # Shape: (8, 3)
-            latent = self.encoder(sample_input)  # Shape: (8, 2)
-            
-            # FIX 1: Apply balanced normalization to prevent collapse and encourage 2D structure
-            # Normalize each dimension separately to ensure both are used
-            
-            # Center the latent points (important for proper scaling)
-            latent = latent - torch.mean(latent, dim=0, keepdim=True)
-            
-            # Calculate standard deviation along each dimension
-            std_x = torch.std(latent[:, 0]) + 1e-8  # avoid division by zero
-            std_y = torch.std(latent[:, 1]) + 1e-8
-            std_z = torch.std(latent[:, 2]) + 1e-8
+        edge_attr_list = []
 
-            # Create a diagonal scaling matrix for balanced scaling
-            scale_factor = 3.0 / torch.tensor([std_x, std_y, std_z], device=latent.device)
-            
-            # Apply scaling to ensure both dimensions have similar variance
-            latent = latent * scale_factor.unsqueeze(0)
-            
-            # Add orthogonal noise to break any linear patterns
-            noise = torch.randn_like(latent) * 0.05
-            latent = latent + noise
-            
-            # Step 3: Construct Gabriel graph
+        for _, obs in enumerate(batch):
+            # Encode each vector to latent vector
+            latent = self.encoder(obs)
+
+            # Create a betta-skeleton graph (with beta = 1 we got the special case of Gabriel Graph)
             edge_index, edge_attr = self.create_gabriel_graph(latent)
-            
+
             # Create PyTorch Geometric Data object
-            data = Data(x=latent[:, 2].reshape(-1, 1), edge_index=edge_index, edge_attr=edge_attr)
-            
-            # Step 4: Process with GCN
-            x1 = F.relu(self.gcn1(data.x, data.edge_index, data.edge_attr))
-            x2 = self.gcn2(x1, data.edge_index, data.edge_attr)
+            graph = Data(x=latent[:, 2].reshape(-1, 1), edge_index=edge_index)
 
-            # Step 5: Decode back to original space
-            reconstructed = self.decoder(x2)  # Shape: (8, 3)
+            x1 = F.relu(self.gcn1(graph.x, graph.edge_index))
+            x2 = F.relu(self.gcn2(x1, graph.edge_index))
 
-            # Store results
-            reconstructed_list.append(reconstructed)
+            # Predict the label
+            x3 = F.relu(self.gcn3(x2, graph.edge_index) + self.alpha * self.skip_connection(latent))
+            logits = self.label_head(x3)
+
+            # Predict the value
+            x4 = F.relu(self.gcn4(x2, graph.edge_index) + self.alpha * self.skip_connection(latent))
+            values = self.value_head(x4)
+
+            reconstructed_labels.append(logits)
+            reconstructed_values.append(values)
             latent_list.append(latent)
             edge_index_list.append(edge_index)
-        
-        # Stack results
-        reconstructed_batch = torch.stack(reconstructed_list)  # Shape: (batch_size, 8)
-        latent_batch = torch.stack(latent_list)  # Shape: (batch_size, 8, 3)
-        
-        return x_preprocessed, reconstructed_batch, latent_batch, edge_index_list
+            edge_attr_list.append(edge_attr)
 
-# FIXED Loss functions that preserve gradient flow
-def reconstruction_loss(original, reconstructed):
-    """Distance between original and reconstructed vectors"""
-    return torch.norm(original - reconstructed, dim=(1, 2)).mean()
+        return (batch[:, :, :4], batch[:, :, 4].reshape(64, 12, 1),
+                torch.stack(reconstructed_labels), torch.stack(reconstructed_values),
+                torch.stack(latent_list), edge_index_list, edge_attr_list)
 
-def graph_l1_loss(latent_batch, edge_index_list):
-    """L1 measure for graph edges with geometric structure preservation"""
-    batch_size = latent_batch.shape[0]
-    total_loss = torch.tensor(0.0, device=latent_batch.device, requires_grad=True)
+
+# Improved reconstruction loss with dimension-specific weighting
+def reconstruction_loss(true_distribution, predicted_logits, true_values, predicted_values, epoch, total_epochs):
+    """
+    Reconstruction loss
+    """
+    labels_kl = F.kl_div(F.log_softmax(predicted_logits, dim=-1), F.softmax(true_distribution, dim=-1), reduction='batchmean')
+    values_mse = F.l1_loss(predicted_values, true_values)
+
+    progress = epoch / total_epochs
+    weight1 = 1.0 - 0.9 * progress
+    weight2 = 0.1 + 0.9 * progress
+
+    return  weight1 * labels_kl + weight2 * values_mse
+
+def l1_loss(edge_attr_list):
+    """
+    L1 loss for the edges on the graph
+    """
+    return torch.norm(torch.cat(edge_attr_list), p=1)
+
+
+def draw_graph(latent_points, edge_index, edge_attr, title="Gabriel Graph", save_dir="graphs"):
+    """
+    Draw a graph visualization of the latent space points and their connections
     
-    for b in range(batch_size):
-        latent = latent_batch[b]  # (8, 2)
-        edge_index = edge_index_list[b]  # (2, num_edges)
-        
-        if edge_index.size(1) > 0:
-            # Extract source and target nodes
-            src_nodes = edge_index[0]
-            tgt_nodes = edge_index[1]
-            
-            # Get node coordinates
-            src_coords = latent[src_nodes]  # (num_edges, 2)
-            tgt_coords = latent[tgt_nodes]  # (num_edges, 2)
-            
-            # Calculate Euclidean distances while preserving gradients
-            edge_distances = torch.norm(src_coords - tgt_coords, p=2, dim=1)
-            
-            # FIX 2: Upper limit on graph loss to prevent collapse
-            # Add a penalty that discourages very small distances
-            collapse_penalty = torch.mean(torch.exp(-10.0 * edge_distances))
-            
-            # Sum distances (divided by 2 because each edge is counted twice in undirected graph)
-            graph_loss = torch.sum(edge_distances) / 2.0 + 5.0 * collapse_penalty
-            
-            # NEW FIX: Encourage triangulation by penalizing collinearity
-            # We need to identify triplets of connected nodes and discourage them from being collinear
-            
-            # Create an adjacency matrix from edge_index
-            adj_matrix = torch.zeros((8, 8), device=latent.device)
-            for i in range(edge_index.size(1)):
-                adj_matrix[edge_index[0, i], edge_index[1, i]] = 1
-            
-            # Look for connected triplets
-            collinearity_loss = torch.tensor(0.0, device=latent.device)
-            triplet_count = 0
-            
-            for i in range(8):
-                # Find nodes connected to i
-                neighbors_i = torch.where(adj_matrix[i] > 0)[0]
-                
-                # For each pair of neighbors, calculate collinearity
-                for j_idx in range(len(neighbors_i)):
-                    j = neighbors_i[j_idx]
-                    for k_idx in range(j_idx + 1, len(neighbors_i)):
-                        k = neighbors_i[k_idx]
-                        
-                        # Calculate collinearity using cross product magnitude
-                        # For 2D points (x,y), cross product magnitude is |x1*y2 - x2*y1|
-                        v1 = latent[j] - latent[i]  # Vector from i to j
-                        v2 = latent[k] - latent[i]  # Vector from i to k
-                        
-                        # Cross product magnitude for 2D vectors
-                        cross_product = torch.abs(v1[0] * v2[1] - v1[1] * v2[0])
-                        
-                        # Normalize by the product of vector lengths
-                        v1_len = torch.norm(v1)
-                        v2_len = torch.norm(v2)
-                        normalized_cross = cross_product / (v1_len * v2_len + 1e-8)
-                        
-                        # We want to maximize this value (higher cross product = less collinear)
-                        # So we penalize small values
-                        collinearity_loss += torch.exp(-5.0 * normalized_cross)
-                        triplet_count += 1
-            
-            # Add collinearity penalty if we found any triplets
-            if triplet_count > 0:
-                collinearity_loss = collinearity_loss / triplet_count
-                graph_loss = graph_loss + 2.0 * collinearity_loss
-            
-            # Normalize by number of edges
-            if edge_index.size(1) > 0:
-                graph_loss = graph_loss / (edge_index.size(1) / 2.0)
-                
-            total_loss = total_loss + graph_loss
-    
-    return total_loss / batch_size
-
-# FIX 3: Add variance loss to prevent latent space collapse and encourage 2D representation
-def variance_loss(latent_batch):
-    """Encourages latent points to have high variance and use both dimensions"""
-    batch_size = latent_batch.shape[0]
-    total_loss = torch.tensor(0.0, device=latent_batch.device, requires_grad=True)
-    
-    for b in range(batch_size):
-        latent = latent_batch[b]  # (8, 2)
-        
-        # Calculate variance for each dimension
-        var_x = torch.var(latent[:, 0])
-        var_y = torch.var(latent[:, 1])
-        
-        # Penalize low variance (want high variance = spread out points)
-        var_loss = torch.exp(-5.0 * (var_x + var_y))
-        
-        # Calculate covariance matrix to check for linear correlations
-        centered_x = latent[:, 0] - torch.mean(latent[:, 0])
-        centered_y = latent[:, 1] - torch.mean(latent[:, 1])
-        cov_xy = torch.mean(centered_x * centered_y)
-        
-        # Normalize covariance to correlation coefficient
-        std_x = torch.sqrt(var_x + 1e-8)
-        std_y = torch.sqrt(var_y + 1e-8)
-        corr_xy = cov_xy / (std_x * std_y + 1e-8)
-        
-        # Penalize high absolute correlation (closer to line)
-        # We want correlation close to 0 for balanced 2D representation
-        correlation_penalty = torch.square(corr_xy)
-        
-        total_loss = total_loss + var_loss + 2.0 * correlation_penalty
-    
-    return total_loss / batch_size
-
-# Generate sample data
-def generate_sample_data(num_samples=1000, batch_size=32):
-    """Generate random input data"""
-    data = torch.randn(num_samples, 8) * 5.0  # Random values
-    dataset = torch.utils.data.TensorDataset(data)
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
-    return dataloader, data
-
-# IMPROVED Visualization function to show progress
-def visualize_latent_space(model, samples, num_samples=5, epoch=None, save_dir="visualizations"):
-    """Visualize 3D latent space in 2D using (x, y) with color based on the 3rd dimension"""
-
+    Args:
+        latent_points: Tensor of shape (num_points, 3) containing 3D coordinates
+        edge_index: Tensor of shape (2, num_edges) containing edge connections
+        edge_attr: Tensor of edge attributes (distances)
+        title: Title for the plot
+        save_dir: Directory to save the plots
+    """
+    # Create save directory if it doesn't exist
     os.makedirs(save_dir, exist_ok=True)
-
-    model.eval()
-    with torch.no_grad():
-        samples = samples[:num_samples].to(device)
-        _, _, latent, edge_index_list = model(samples)
-
-    fig, axs = plt.subplots(1, num_samples, figsize=(5 * num_samples, 5))
-    if num_samples == 1:
-        axs = [axs]
-
-    all_coords = [latent[i].cpu().numpy()[:, :2] for i in range(num_samples)]  # x, y only
-    all_points = np.vstack(all_coords)
-    min_x, max_x = np.min(all_points[:, 0]) - 0.5, np.max(all_points[:, 0]) + 0.5
-    min_y, max_y = np.min(all_points[:, 1]) - 0.5, np.max(all_points[:, 1]) + 0.5
-
-    # Ensure minimum spread
-    if max_x - min_x < 2.0:
-        center_x = (max_x + min_x) / 2
-        min_x, max_x = center_x - 1.0, center_x + 1.0
-    if max_y - min_y < 2.0:
-        center_y = (max_y + min_y) / 2
-        min_y, max_y = center_y - 1.0, center_y + 1.0
-
-    for i in range(num_samples):
-        coords = latent[i].cpu().numpy()  # shape (n_nodes, 3)
-        x_y = coords[:, :2]
-        color_val = coords[:, 2]  # Third dimension used for color
-        edge_index = edge_index_list[i].cpu().numpy()
-
-        # Compute node degrees for size scaling
-        if edge_index.size > 0:
-            node_degrees = np.bincount(edge_index[0], minlength=len(coords))
-            sizes = 50 + 20 * node_degrees
-        else:
-            sizes = np.ones(len(coords)) * 70
-
-        # Plot nodes with color and size
-        sc = axs[i].scatter(x_y[:, 0], x_y[:, 1], c=color_val, cmap='viridis', s=sizes, zorder=5, alpha=0.8)
-
-        # Plot edges
-        if edge_index.size > 0:
-            edges_set = set()
-            for j in range(edge_index.shape[1]):
-                src, dst = edge_index[0, j], edge_index[1, j]
-                if src < dst:
-                    edges_set.add((src, dst))
-            for src, dst in edges_set:
-                axs[i].plot([x_y[src, 0], x_y[dst, 0]],
-                            [x_y[src, 1], x_y[dst, 1]], 'k-', alpha=0.4, zorder=1)
-
-        # Add node labels
-        for j, (x, y) in enumerate(x_y):
-            axs[i].text(x, y, str(j), fontsize=9, ha='center', va='center',
-                        bbox=dict(facecolor='white', alpha=0.6, edgecolor='none'))
-
-        axs[i].set_title(f'Sample {i + 1}')
-        axs[i].set_aspect('equal')
-        axs[i].grid(alpha=0.3)
-        axs[i].set_xlim(min_x, max_x)
-        axs[i].set_ylim(min_y, max_y)
-
-    # Add a colorbar based on last scatterplot
-    cbar = fig.colorbar(sc, ax=axs, orientation='vertical', fraction=0.02, pad=0.04)
-    cbar.set_label('Node Feature Value', rotation=270, labelpad=15)
-
-    if epoch is not None:
-        plt.savefig(f'{save_dir}/latent_space_epoch_{epoch:03d}.png')
+    
+    # Convert tensors to numpy for plotting
+    if hasattr(latent_points, 'detach'):
+        points = latent_points.detach().cpu().numpy()
     else:
-        plt.savefig(f'{save_dir}/latent_space_final.png')
-    plt.close()
+        points = latent_points
+        
+    if hasattr(edge_index, 'detach'):
+        edges = edge_index.detach().cpu().numpy()
+    else:
+        edges = edge_index
+        
+    if hasattr(edge_attr, 'detach'):
+        edge_weights = edge_attr.detach().cpu().numpy()
+    else:
+        edge_weights = edge_attr
+    
+    # Create NetworkX graph
+    G = nx.Graph()
+    
+    # Add nodes with positions
+    num_points = points.shape[0]
+    for i in range(num_points):
+        G.add_node(i, pos=(points[i, 0], points[i, 1]))
+    
+    # Add edges if they exist
+    if edges.shape[1] > 0:
+        for i in range(0, edges.shape[1], 2):  # Skip duplicate edges (undirected)
+            node1, node2 = edges[0, i], edges[1, i]
+            weight = edge_weights[i] if len(edge_weights) > i else 1.0
+            G.add_edge(node1, node2, weight=weight)
+    
+    # Create the plot
+    plt.figure(figsize=(10, 8))
+    
+    # Get node positions
+    pos = nx.get_node_attributes(G, 'pos')
+    
+    # Draw the graph
+    if G.number_of_edges() > 0:
+        # Draw edges
+        nx.draw_networkx_edges(G, pos, alpha=0.6, width=1.5, edge_color='gray')
+        
+        # Draw edge labels (distances)
+        if len(edge_weights) > 0:
+            edge_labels = {}
+            for i, (u, v) in enumerate(G.edges()):
+                if i < len(edge_weights):
+                    edge_labels[(u, v)] = f'{edge_weights[i]:.2f}'
+            nx.draw_networkx_edge_labels(G, pos, edge_labels, font_size=8)
+    
+    # Draw nodes
+    nx.draw_networkx_nodes(G, pos, node_color='lightblue', 
+                          node_size=500, alpha=0.8)
+    
+    # Draw node labels
+    nx.draw_networkx_labels(G, pos, font_size=10, font_weight='bold')
+    
+    # Add z-coordinate as text annotations
+    for i, (x, y) in pos.items():
+        plt.annotate(f'z={points[i, 2]:.2f}', 
+                    (x, y), xytext=(5, 5), 
+                    textcoords='offset points', 
+                    fontsize=8, alpha=0.7)
+    
+    plt.title(f'{title}\nNodes: {G.number_of_nodes()}, Edges: {G.number_of_edges()}')
+    plt.axis('equal')
+    plt.grid(True, alpha=0.3)
+    plt.xlabel('Latent Dimension 1')
+    plt.ylabel('Latent Dimension 2')
+    
+    # Save the plot
+    filename = f'{title.lower().replace(" ", "_").replace(":", "_")}.png'
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, filename), 
+                dpi=150, bbox_inches='tight')
+    plt.close()  # Close the figure to free memory
+    
+    return G
 
 
-# Modified training function
-def train_model(model, dataloader, test_samples, epochs=100, lr=0.001, graph_weight=0.1, var_weight=0.5, save_every=10):
-    """Train the autoencoder model"""
-    # FIX: Use higher learning rate initially to escape poor local minima
-    optimizer = optim.Adam(model.parameters(), lr=lr*2)
-    
-    # NEW FIX: Add warmup phase and then cosine annealing
-    def lr_lambda(epoch):
-        if epoch <= 10:  # Warmup phase
-            return 0.5 + 0.5 * epoch / 10
-        else:
-            # Cosine annealing after warmup
-            return 0.5 * (1 + np.cos(np.pi * (epoch - 10) / (epochs - 10)))
-    
-    scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-    
+def train_model(model, dataloader, epochs, lr, save_path="trained_model.pth"):
+    """Train with only reconstruction loss for better convergence"""
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.5, patience=5
+    )
+
     train_losses = []
-    rec_losses = []
-    graph_losses = []
-    var_losses = []
-    
-    # Create fixed test batch for consistent visualization
-    fixed_test_batch = test_samples[:5].clone().to(device)
-    
-    # Initial visualization (epoch 0)
-    visualize_latent_space(model, fixed_test_batch, num_samples=5, epoch=0)
-    
-    # NEW FIX: Add random restarts to avoid getting stuck in a line configuration
-    best_model_state = None
-    best_loss = float('inf')
-    patience = 0
-    patience_limit = 10
-    
+
     for epoch in range(epochs):
         model.train()
         epoch_loss = 0.0
-        epoch_rec_loss = 0.0
-        epoch_graph_loss = 0.0
-        epoch_var_loss = 0.0
-        
-        # NEW FIX: Apply random perturbation to break symmetry if we're stuck
-        if patience > patience_limit:
-            print(f"Applying random perturbation at epoch {epoch+1} to break symmetry")
-            for param in model.encoder.parameters():
-                param.data += torch.randn_like(param) * 0.01
-            patience = 0
-        
-        for batch_idx, (batch,) in enumerate(dataloader):
-            batch = batch.to(device)
-            
+
+        for _, (batch,) in enumerate(dataloader):
+
             # Forward pass
-            original, reconstructed, latent, edge_index_list = model(batch)
-            
-            # Calculate losses
-            rec_loss = reconstruction_loss(original, reconstructed)
-            g_loss = graph_l1_loss(latent, edge_index_list)
-            v_loss = variance_loss(latent)
-            
-            # NEW FIX: Dynamic loss weighting - increase variance weight if we're stuck in a line
-            # Detect if in a line by checking if variance ratio between dimensions is extreme
-            
-            # Calculate dimension variances across batch
-            dim_vars = []
-            for b in range(latent.shape[0]):
-                var_x = torch.var(latent[b, :, 0])
-                var_y = torch.var(latent[b, :, 1])
-                dim_vars.append((var_x, var_y))
-            
-            # Calculate average ratio of larger variance to smaller variance
-            ratios = []
-            for var_x, var_y in dim_vars:
-                if var_x > var_y:
-                    ratio = var_x / (var_y + 1e-8)
-                else:
-                    ratio = var_y / (var_x + 1e-8)
-                ratios.append(ratio)
+            true_distribution, true_values, predicted_logits, predicted_values, latent_batch, edge_index_list, edge_attr_list = model(batch)
 
-            avg_ratio = sum(ratios) / len(ratios)
-
-            # If ratio is high, we're likely in a line configuration
-            # Dynamically adjust weights to encourage 2D structure
-            if avg_ratio > 5.0:  # Significant imbalance
-                dynamic_var_weight = var_weight * (1.0 + torch.log10(avg_ratio) / 2.0)
-                dynamic_graph_weight = graph_weight * 0.5  # Reduce graph weight
-            else:
-                dynamic_var_weight = var_weight
-                dynamic_graph_weight = graph_weight
-
-            # Modified loss balancing with training progression
-            reconstruction_priority = max(0.8 - 0.6 * (epoch / epochs), 0.2)  # Start at 0.8, decrease to 0.2
-            graph_priority = 1.0 - reconstruction_priority
-
-            # Balance the losses with dynamic weights
-            total_loss = (reconstruction_priority * rec_loss +
-                          graph_priority * (dynamic_graph_weight * g_loss + dynamic_var_weight * v_loss))
+            # Calculate the combined loss function
+            loss = reconstruction_loss(true_distribution, predicted_logits, true_values, predicted_values, epoch, epochs)
 
             # Backward and optimize
             optimizer.zero_grad()
-            total_loss.backward()
-            
-            # Add gradient clipping to prevent instability
+            loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            
             optimizer.step()
-            
-            # Record losses
-            epoch_loss += total_loss.item()
-            epoch_rec_loss += rec_loss.item()
-            epoch_graph_loss += g_loss.item()
-            epoch_var_loss += v_loss.item()
-            
-            if (batch_idx + 1) % 10 == 0:
-                print(f'Epoch [{epoch+1}/{epochs}], Batch: {batch_idx+1}, '
-                      f'Loss: {total_loss.item():.4f}, Rec Loss: {rec_loss.item():.4f}, '
-                      f'Graph Loss: {g_loss.item():.4f}, Var Loss: {v_loss.item():.4f}, '
-                      f'Var/Graph Ratio: {avg_ratio:.2f}')
-        
-        # Calculate average losses
-        avg_loss = epoch_loss / len(dataloader)
-        avg_rec_loss = epoch_rec_loss / len(dataloader)
-        avg_graph_loss = epoch_graph_loss / len(dataloader)
-        avg_var_loss = epoch_var_loss / len(dataloader)
-        
-        train_losses.append(avg_loss)
-        rec_losses.append(avg_rec_loss)
-        graph_losses.append(avg_graph_loss)
-        var_losses.append(avg_var_loss)
-        
-        # Print epoch summary
-        print(f'Epoch [{epoch+1}/{epochs}], Avg Loss: {avg_loss:.4f}, '
-              f'Avg Rec Loss: {avg_rec_loss:.4f}, Avg Graph Loss: {avg_graph_loss:.4f}, '
-              f'Avg Var Loss: {avg_var_loss:.4f}')
-        
-        # Update learning rate
-        scheduler.step()
-        
-        # Visualize latent space periodically
-        if (epoch + 1) % save_every == 0 or epoch == 0:
-            visualize_latent_space(model, fixed_test_batch, num_samples=5, epoch=epoch+1)
-    
-    # Plot training losses
-    plt.figure(figsize=(15, 4))
-    plt.subplot(1, 4, 1)
-    plt.plot(train_losses)
-    plt.title('Total Loss')
-    plt.xlabel('Epoch')
-    plt.grid(alpha=0.3)
-    
-    plt.subplot(1, 4, 2)
-    plt.plot(rec_losses)
-    plt.title('Reconstruction Loss')
-    plt.xlabel('Epoch')
-    plt.grid(alpha=0.3)
-    
-    plt.subplot(1, 4, 3)
-    plt.plot(graph_losses)
-    plt.title('Graph Loss')
-    plt.xlabel('Epoch')
-    plt.grid(alpha=0.3)
-    
-    plt.subplot(1, 4, 4)
-    plt.plot(var_losses)
-    plt.title('Variance Loss')
-    plt.xlabel('Epoch')
-    plt.grid(alpha=0.3)
-    
-    plt.tight_layout()
-    plt.savefig('training_losses.png')
-    plt.close()
 
-    return model
+            epoch_loss += loss.item()
+
+        if (epoch % 5 == 0) or (epoch == epochs - 1):
+            print(f'Epoch: {epoch}')
+            print('='*50, 'Original labels', '='*50)
+            print(F.softmax(true_distribution[0], dim=-1))
+            print('=' * 50, 'Reconstructed labes', '=' * 50)
+            print(F.softmax(predicted_logits[0], dim=-1))
+            print('='*50, 'Original values', '='*50)
+            print(true_values[0])
+            print('=' * 50, 'Reconstructed values', '=' * 50)
+            print(predicted_values[0])
+            draw_graph(latent_batch[11], edge_index=edge_index_list[11], edge_attr=edge_attr_list[11],
+                      title=f"Training Epoch {epoch}", save_dir="training_graphs")
+
+        avg_loss = epoch_loss / len(dataloader)
+        train_losses.append(avg_loss)
+
+        print(f'Epoch [{epoch + 1}/{epochs}], Avg Loss: {avg_loss:.6f}')
+
+        # Update learning rate based on validation loss
+        scheduler.step(avg_loss)
+
+    # Save the trained model
+    torch.save({
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(),
+        'final_loss': avg_loss,
+        'epochs_trained': epochs,
+        'model_config': {
+            'input_dim': 12,
+            'output_dim': 3,
+            'hidden_dim': 64
+        }
+    }, save_path)
+    
+    print(f"Model saved to {save_path}")
+
+
+# Generate sample data
+def generate_sample_data(num_samples=1024, batch_size=64):
+    """Sample the data from the environment with a random policy"""
+    
+    env = simple_speaker_listener_v4.parallel_env(max_cycles=num_samples)
+    env.reset()
+    observations = []
+    
+    def create_observation_pair(message):
+        """Create both observation variants for a message"""
+
+        # First observation (agent_type=0)
+        obs1 = torch.zeros(12, 5)
+        obs1[:, :4] = torch.tensor(list(GRAY_FORWARD_MAPPING.values()))  # labels
+        obs1[0, 4] = 0 # agent_type
+        obs1[1:9, 4] = torch.tensor(message[:8])  # velocity and landmarks
+        obs1[9:, 4] = -1 # masked out
+
+        # First observation (agent_type=0)
+        obs2 = torch.zeros(12, 5)
+        obs2[:, :4] = torch.tensor(list(GRAY_FORWARD_MAPPING.values()))  # labels
+        obs2[0, 4] = 1 # agent_type
+        obs2[1:9, 4] = -1  # masked out
+        obs2[9:, 4] = torch.tensor(message[8:])  # target flags
+
+        perm = torch.randperm(len(GRAY_FORWARD_MAPPING))
+        obs1 = obs1[perm]
+        obs2 =  obs2[perm]
+
+        return [obs1, obs2]
+    
+    while env.agents and len(observations) < num_samples:
+        actions = {agent: env.action_space(agent).sample() for agent in env.agents}
+        obs, *_ = env.step(actions)
+        observations.extend(create_observation_pair(obs['listener_0']))
+    
+    env.close()
+
+    observations = torch.stack(observations)
+    perm = torch.randperm(len(observations))
+    observations = observations[perm]
+
+    return torch.utils.data.DataLoader(
+        torch.utils.data.TensorDataset(observations.to(device)),
+        batch_size=batch_size,
+        shuffle=True
+    )
 
 # Main function
 def main():
-    # Make sure we have PyTorch Geometric
-    try:
-        import torch_geometric
-        print(f"Using PyTorch Geometric version: {torch_geometric.__version__}")
-    except ImportError:
-        print("PyTorch Geometric not found. Please install with:")
-        print("pip install torch-geometric")
-        return
+    # Create directories for saving outputs
+    os.makedirs("training_graphs", exist_ok=True)
     
     # Generate dataset
-    dataloader, samples = generate_sample_data(num_samples=1000, batch_size=32)
-    
+    dataloader = generate_sample_data()
+
     # Create model
     model = GraphAutoEncoder().to(device)
     print(model)
-    
-    # FIX 9: Adjust hyperparameters for training
-    trained_model = train_model(
-        model, 
-        dataloader, 
-        samples, 
+
+    # Create a timestamped model filename
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    model_filename = f"graph_autoencoder_{timestamp}.pth"
+
+    # Hyperparameters for training
+    train_model(
+        model,
+        dataloader,
         epochs=30,
         lr=0.0025,
-        graph_weight=0.03,  # Further reduced to prevent line formation
-        var_weight=1.0,     # Increased variance loss weight to encourage 2D structure
-        save_every=5        # More frequent visualization to track progress
+        save_path=model_filename
     )
     
-    # Visualize final latent space
-    visualize_latent_space(trained_model, samples[:10], num_samples=5)
-    
-    # Save the model
-    torch.save({
-        'model_state_dict': trained_model.state_dict(),
-    }, 'graph_autoencoder_model.pth')
-    
-    print("Training complete. Model saved to graph_autoencoder_model.pth")
+    print(f"Training completed! Model saved as {model_filename}")
 
 if __name__ == "__main__":
     main()
