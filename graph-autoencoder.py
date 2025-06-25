@@ -315,7 +315,7 @@ def train_model(model, dataloader, epochs, lr, param_schema, save_path="trained_
         model.train()
         epoch_loss = 0.0
 
-        for _, (batch,) in enumerate(dataloader):
+        for _, (batch, inv_perms) in enumerate(dataloader):
 
             # Forward pass
             true_distribution, true_values, predicted_logits, predicted_values, latent_batch, edge_index_list, edge_attr_list = model(batch)
@@ -332,6 +332,11 @@ def train_model(model, dataloader, epochs, lr, param_schema, save_path="trained_
             epoch_loss += loss.item()
 
         if (epoch % 5 == 0) or (epoch == epochs - 1):
+            index_to_visualize = 11
+            original_order = inv_perms[index_to_visualize]
+            reordered_latent = latent_batch[index_to_visualize][original_order]
+            reordered_edges = edge_index_list[index_to_visualize]
+            reordered_attrs = edge_attr_list[index_to_visualize]
             print(f'Epoch: {epoch}')
             print('='*50, 'Original labels', '='*50)
             print(F.softmax(true_distribution[0], dim=-1))
@@ -342,9 +347,9 @@ def train_model(model, dataloader, epochs, lr, param_schema, save_path="trained_
             print('=' * 50, 'Reconstructed values', '=' * 50)
             print(predicted_values[0])
             visualize_graph(
-                latent_points=latent_batch[11],
-                edge_index=edge_index_list[11],
-                edge_attr=edge_attr_list[11],
+                latent_points=reordered_latent,
+                edge_index=reordered_edges,
+                edge_attr=reordered_attrs,
                 epoch=epoch,
                 param_schema=param_schema
             )
@@ -381,6 +386,7 @@ def generate_sample_data(num_samples=1024, batch_size=64):
     env = simple_speaker_listener_v4.parallel_env(max_cycles=num_samples)
     env.reset()
     observations = []
+    permutations = []
     
     def create_observation_pair(message):
         """Create both observation variants for a message"""
@@ -400,32 +406,40 @@ def generate_sample_data(num_samples=1024, batch_size=64):
         obs2[9:, 4] = torch.tensor(message[8:])  # target flags
 
         perm = torch.randperm(len(GRAY_FORWARD_MAPPING))
+        inv_perm = torch.argsort(perm)
         obs1 = obs1[perm]
         obs2 =  obs2[perm]
 
-        return [obs1, obs2]
-    
+        return [(obs1, inv_perm), (obs2, inv_perm)]
+
+
     while env.agents and len(observations) < num_samples:
         actions = {agent: env.action_space(agent).sample() for agent in env.agents}
         obs, *_ = env.step(actions)
-        observations.extend(create_observation_pair(obs['listener_0']))
+        pairs = create_observation_pair(obs['listener_0'])
+
+        for obs_tensor, inv_perm in pairs:
+            observations.append(obs_tensor)
+            permutations.append(inv_perm)
     
     env.close()
 
     observations = torch.stack(observations)
+    permutations = torch.stack(permutations)
     perm = torch.randperm(len(observations))
     observations = observations[perm]
+    permutations = permutations[perm]
 
     return torch.utils.data.DataLoader(
-        torch.utils.data.TensorDataset(observations.to(device)),
+        torch.utils.data.TensorDataset(observations.to(device), permutations.to(device)),
         batch_size=batch_size,
         shuffle=True
     )
 
 @dataclass
 class NodeDescriptor:
-    name: str       # Например: "self_vel-x"
-    group: str      # Тип: "self_vel", "landmark"
+    name: str
+    group: str
 
 group_color_map = {
     "self_vel": "#1f77b4",
@@ -457,7 +471,6 @@ def visualize_graph(latent_points, edge_index, edge_attr, epoch, save_dir="graph
         positions[i] = (x, y)
         coords.append([x, y])
 
-    coords = np.array(coords)
     edges = edge_index.t().cpu().numpy()
     for src, tgt in edges:
         G.add_edge(src, tgt)
@@ -537,6 +550,7 @@ def visualize_graph(latent_points, edge_index, edge_attr, epoch, save_dir="graph
     #     circle = Circle((center_x, center_y), radius, edgecolor='#E94F31', facecolor='none', linestyle='--', linewidth=1.5)
     #     ax.add_patch(circle)
 
+    # coords = np.array(coords)
     # vor = Voronoi(coords)
     # voronoi_plot_2d(vor, ax=ax, show_vertices=False, line_colors='orange', line_width=1.5, line_alpha=0.6, point_size=0)
 
