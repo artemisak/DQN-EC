@@ -375,6 +375,7 @@ def train_model(
                 total_epochs=epochs,
                 gamma=gamma
             )
+            loss = reconstruction_loss(true_distribution, predicted_logits, true_values, predicted_values, epoch, epochs) + 1e-6* l1_loss(edge_attr_list)
 
             # Backward and optimize
             optimizer.zero_grad()
