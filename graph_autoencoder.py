@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import List
 
 from matplotlib.patches import Circle
+from networkx.drawing import draw_networkx_edges
 from scipy.spatial import Voronoi, voronoi_plot_2d
 import matplotlib.patches as mpatches
 from dataclasses import dataclass
@@ -17,10 +18,6 @@ import matplotlib.pyplot as plt
 import networkx as nx
 import os
 from datetime import datetime
-
-from graphs_wrapper import (create_amadg_graph, create_delaunay_graph,
-                            create_beta_skeleton_graph, create_gabriel_graph,
-                            create_anisotropic_graph, create_dal_graph)
 
 # Determine device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -97,20 +94,141 @@ class GraphAutoEncoder(nn.Module):
             nn.init.zeros_(m.bias)
 
 
+    def create_gabriel_graph(self, points):
+        """Create Gabriel graph with minimal preprocessing to preserve information"""
+        num_points = points.shape[0]
+        edge_indices = []
+        edge_attrs = []
+
+        # Convert to numpy for easier Gabriel graph checks
+        points_np = points.detach().cpu().numpy()
+
+        for i in range(num_points):
+            for j in range(i + 1, num_points):
+                midpoint = (points_np[i] + points_np[j]) / 2
+                radius_sq = np.sum((points_np[i] - midpoint) ** 2)
+
+                is_gabriel = True
+                for k in range(num_points):
+                    if k != i and k != j:
+                        dist_sq = np.sum((points_np[k] - midpoint) ** 2)
+                        if dist_sq < radius_sq:
+                            is_gabriel = False
+                            break
+
+                if is_gabriel:
+                    dist = torch.norm(points[i] - points[j])
+                    edge_indices.append([i, j])
+                    edge_indices.append([j, i])
+                    edge_attrs.append(dist)
+                    edge_attrs.append(dist)
+
+        # Ensure there's at least one edge
+        if not edge_indices:
+            distances = torch.cdist(points, points)
+            mask = torch.ones_like(distances, dtype=torch.bool)
+            mask.fill_diagonal_(False)
+            min_dist, min_indices = torch.min(distances + ~mask * 1e10, dim=1)
+            min_dist_idx = torch.argmin(min_dist)
+            min_pair_idx = min_indices[min_dist_idx]
+            dist = torch.norm(points[min_dist_idx] - points[min_pair_idx])
+
+            edge_indices.append([int(min_dist_idx), int(min_pair_idx)])
+            edge_indices.append([int(min_pair_idx), int(min_dist_idx)])
+            edge_attrs.append(dist)
+            edge_attrs.append(dist)
+
+        # Convert to tensors
+        if edge_indices:
+            edge_index = torch.tensor(edge_indices, dtype=torch.long, device=points.device).t()
+            edge_attr = torch.stack(edge_attrs)
+        else:
+            edge_index = torch.zeros((2, 0), dtype=torch.long, device=points.device)
+            edge_attr = torch.zeros((0, 1), dtype=torch.float, device=points.device)
+
+        return edge_index, edge_attr
+
+    def build_beta_skeleton(self, points, beta: float):
+        num_points = points.shape[0]
+        edge_indices = []
+        edge_attrs = []
+
+        points_np = points.detach().cpu().numpy()
+
+        for i in range(num_points):
+            for j in range(i + 1, num_points):
+                pi = points_np[i]
+                pj = points_np[j]
+
+                midpoint = (pi + pj) / 2
+                dij = np.linalg.norm(pi - pj)
+
+                is_edge = True
+                for k in range(num_points):
+                    if k == i or k == j:
+                        continue
+                    pk = points_np[k]
+
+                    if beta == 0:
+                        # Relative Neighborhood Graph (RNG)
+                        if max(np.linalg.norm(pi - pk), np.linalg.norm(pj - pk)) < dij:
+                            is_edge = False
+                            break
+
+                    elif beta == 1:
+                        # Gabriel Graph
+                        if np.linalg.norm(pk - midpoint) < dij / 2:
+                            is_edge = False
+                            break
+
+                    else:
+                        # Общий случай
+                        center1 = pi + (pj - pi) * beta / (2 * beta)
+                        center2 = pj + (pi - pj) * beta / (2 * beta)
+                        radius = dij / (2 * beta)
+
+                        if np.linalg.norm(pk - center1) < radius or np.linalg.norm(pk - center2) < radius:
+                            is_edge = False
+                            break
+
+                if is_edge:
+                    # Добавляем оба направления
+                    edge_indices.append([i, j])
+                    edge_indices.append([j, i])
+
+                    dist_tensor = torch.norm(points[i] - points[j])
+                    edge_attrs.append(dist_tensor)
+                    edge_attrs.append(dist_tensor)
+
+        if edge_indices:
+            edge_index = torch.tensor(edge_indices, dtype=torch.long, device=points.device).t()
+            edge_attr = torch.stack(edge_attrs).unsqueeze(1)  # shape: (N_edges, 1)
+        else:
+            edge_index = torch.zeros((2, 0), dtype=torch.long, device=points.device)
+            edge_attr = torch.zeros((0, 1), dtype=torch.float, device=points.device)
+
+        return edge_index, edge_attr
+
     def forward(self, batch):
 
         reconstructed_labels = []
         reconstructed_values = []
         latent_list = []
-        edge_index_list = []
-        edge_attr_list = []
+        beta_values = [0, 1, 2]
+        beta_edges = {}
 
         for _, obs in enumerate(batch):
             # Encode each vector to latent vector
             latent = self.encoder(obs)
 
-            # Create a preset graph
-            edge_index, edge_attr = create_anisotropic_graph(latent[:, :2])
+            # Create a betta-skeleton graph (with beta = 1 we got the special case of Gabriel Graph)
+            edge_index, edge_attr = self.create_gabriel_graph(latent)
+            for beta in beta_values:
+                if beta not in beta_edges:
+                    beta_edges[beta] = [[],[]]
+                edge_index, edge_attr = self.build_beta_skeleton(latent, beta)
+                beta_edges[beta][0].append(edge_index)
+                beta_edges[beta][1].append(edge_attr)
 
             # Create PyTorch Geometric Data object
             graph = Data(x=latent[:, 2].reshape(-1, 1), edge_index=edge_index)
@@ -129,12 +247,10 @@ class GraphAutoEncoder(nn.Module):
             reconstructed_labels.append(logits)
             reconstructed_values.append(values)
             latent_list.append(latent)
-            edge_index_list.append(edge_index)
-            edge_attr_list.append(edge_attr)
 
         return (batch[:, :, :4], batch[:, :, 4].reshape(64, 12, 1),
                 torch.stack(reconstructed_labels), torch.stack(reconstructed_values),
-                torch.stack(latent_list), edge_index_list, edge_attr_list)
+                torch.stack(latent_list), beta_edges)
 
 
 # Improved reconstruction loss with dimension-specific weighting
@@ -157,100 +273,6 @@ def l1_loss(edge_attr_list):
     """
     return torch.norm(torch.cat(edge_attr_list), p=1)
 
-
-def draw_graph(latent_points, edge_index, edge_attr, title="Gabriel Graph", save_dir="graphs"):
-    """
-    Draw a graph visualization of the latent space points and their connections
-    
-    Args:
-        latent_points: Tensor of shape (num_points, 3) containing 3D coordinates
-        edge_index: Tensor of shape (2, num_edges) containing edge connections
-        edge_attr: Tensor of edge attributes (distances)
-        title: Title for the plot
-        save_dir: Directory to save the plots
-    """
-    # Create save directory if it doesn't exist
-    os.makedirs(save_dir, exist_ok=True)
-    
-    # Convert tensors to numpy for plotting
-    if hasattr(latent_points, 'detach'):
-        points = latent_points.detach().cpu().numpy()
-    else:
-        points = latent_points
-        
-    if hasattr(edge_index, 'detach'):
-        edges = edge_index.detach().cpu().numpy()
-    else:
-        edges = edge_index
-        
-    if hasattr(edge_attr, 'detach'):
-        edge_weights = edge_attr.detach().cpu().numpy()
-    else:
-        edge_weights = edge_attr
-    
-    # Create NetworkX graph
-    G = nx.Graph()
-    
-    # Add nodes with positions
-    num_points = points.shape[0]
-    for i in range(num_points):
-        G.add_node(i, pos=(points[i, 0], points[i, 1]))
-    
-    # Add edges if they exist
-    if edges.shape[1] > 0:
-        for i in range(0, edges.shape[1], 2):  # Skip duplicate edges (undirected)
-            node1, node2 = edges[0, i], edges[1, i]
-            weight = edge_weights[i] if len(edge_weights) > i else 1.0
-            G.add_edge(node1, node2, weight=weight)
-    
-    # Create the plot
-    plt.figure(figsize=(10, 8))
-    
-    # Get node positions
-    pos = nx.get_node_attributes(G, 'pos')
-    
-    # Draw the graph
-    if G.number_of_edges() > 0:
-        # Draw edges
-        nx.draw_networkx_edges(G, pos, alpha=0.6, width=1.5, edge_color='gray')
-        
-        # Draw edge labels (distances)
-        if len(edge_weights) > 0:
-            edge_labels = {}
-            for i, (u, v) in enumerate(G.edges()):
-                if i < len(edge_weights):
-                    edge_labels[(u, v)] = f'{edge_weights[i]:.2f}'
-            nx.draw_networkx_edge_labels(G, pos, edge_labels, font_size=8)
-    
-    # Draw nodes
-    nx.draw_networkx_nodes(G, pos, node_color='lightblue', 
-                          node_size=500, alpha=0.8)
-    
-    # Draw node labels
-    nx.draw_networkx_labels(G, pos, font_size=10, font_weight='bold')
-    
-    # Add z-coordinate as text annotations
-    for i, (x, y) in pos.items():
-        plt.annotate(f'z={points[i, 2]:.2f}', 
-                    (x, y), xytext=(5, 5), 
-                    textcoords='offset points', 
-                    fontsize=8, alpha=0.7)
-    
-    plt.title(f'{title}\nNodes: {G.number_of_nodes()}, Edges: {G.number_of_edges()}')
-    plt.axis('equal')
-    plt.grid(True, alpha=0.3)
-    plt.xlabel('Latent Dimension 1')
-    plt.ylabel('Latent Dimension 2')
-    
-    # Save the plot
-    filename = f'{title.lower().replace(" ", "_").replace(":", "_")}.png'
-    plt.savefig(os.path.join(save_dir, filename), 
-                dpi=150, bbox_inches='tight')
-    plt.close()  # Close the figure to free memory
-    
-    return G
-
-
 def train_model(model, dataloader, epochs, lr, param_schema, save_path="trained_model.pth"):
     """Train with only reconstruction loss for better convergence"""
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
@@ -267,10 +289,10 @@ def train_model(model, dataloader, epochs, lr, param_schema, save_path="trained_
         for _, (batch,) in enumerate(dataloader):
 
             # Forward pass
-            true_distribution, true_values, predicted_logits, predicted_values, latent_batch, edge_index_list, edge_attr_list = model(batch)
+            true_distribution, true_values, predicted_logits, predicted_values, latent_batch, beta_edges = model(batch)
 
             # Calculate the combined loss function
-            loss = reconstruction_loss(true_distribution, predicted_logits, true_values, predicted_values, epoch, epochs) + 1e-6 * l1_loss(edge_attr_list)
+            loss = reconstruction_loss(true_distribution, predicted_logits, true_values, predicted_values, epoch, epochs)
 
             # Backward and optimize
             optimizer.zero_grad()
@@ -301,13 +323,18 @@ def train_model(model, dataloader, epochs, lr, param_schema, save_path="trained_
                 variable_order.append(var_id)
             sorted_schema = [param_schema[i - 1] for i in variable_order]
 
-            visualize_graph(
-                latent_points=latent_batch[idx],
-                edge_index=edge_index_list[idx],
-                edge_attr=edge_attr_list[idx],
-                epoch=epoch,
-                param_schema=sorted_schema
-            )
+            graphs = {}
+            for key in beta_edges.keys():
+                edge_index_list, edge_attr_list = beta_edges[key][0], beta_edges[key][1]
+                graph = visualize_graph(
+                    latent_points=latent_batch[idx],
+                    edge_index=edge_index_list[idx],
+                    edge_attr=edge_attr_list[idx],
+                    parameters={"epoch": epoch, "beta": key},
+                    param_schema=sorted_schema
+                )
+                graphs[key] = graph
+            visualise_growth(graphs, epoch)
 
         avg_loss = epoch_loss / len(dataloader)
         train_losses.append(avg_loss)
@@ -395,7 +422,7 @@ group_color_map = {
     "unknown": "#7f7f7f"
 }
 
-def visualize_graph(latent_points, edge_index, edge_attr, epoch, save_dir="graphs", param_schema=None):
+def visualize_graph(latent_points, edge_index, edge_attr, parameters: dict, save_dir="graphs", param_schema=None) -> nx.Graph:
     """
     Visualisation Graph
 
@@ -440,21 +467,18 @@ def visualize_graph(latent_points, edge_index, edge_attr, epoch, save_dir="graph
 
     fig = plt.figure(figsize=(12, 8))
     gs = fig.add_gridspec(
-        nrows=1,
+        nrows=2,
         ncols=3,
         width_ratios=[1, 1, 1],
-        wspace=0.3
+        height_ratios=[3, 1],
+        wspace=0.3,
+        hspace = 0.5
     )
 
     ax_graph = fig.add_subplot(gs[0, 0])
-    ax_nodes = fig.add_subplot(gs[0, 1])
-    ax_edges = fig.add_subplot(gs[0, 2])
-
     ax_graph.axis('off')
     ax_graph.set_aspect('equal', adjustable='box')
-    ax_graph.set_title(f"Latent Graph — Epoch {epoch}", fontsize=11)
-    ax_nodes.axis('off')
-    ax_edges.axis('off')
+    ax_graph.set_title(f"Latent Graph beta={parameters["beta"]} — Epoch {parameters["epoch"]}", fontsize=11)
 
     nx.draw_networkx_nodes(
         G,
@@ -508,11 +532,16 @@ def visualize_graph(latent_points, edge_index, edge_attr, epoch, save_dir="graph
     ax_graph.legend(
         handles=legend_elements,
         loc='upper center',
-        bbox_to_anchor=(0.5, -0.08),  # под графиком
+        bbox_to_anchor=(0.5, -0.08),
         ncol=len(legend_elements),
         fontsize=8,
         frameon=False
     )
+
+    ax_nodes = fig.add_subplot(gs[0, 1])
+    ax_edges = fig.add_subplot(gs[0, 2])
+    ax_nodes.axis('off')
+    ax_edges.axis('off')
 
     node_table_data = []
     node_table_data.append(["No.", "Name", "X", "Y"])
@@ -573,9 +602,70 @@ def visualize_graph(latent_points, edge_index, edge_attr, epoch, save_dir="graph
     table_edges.auto_set_font_size(False)
     table_edges.set_fontsize(7)
 
-    filename = os.path.join(save_dir, f"epoch{epoch + 1:02d}.png")
+    plt.tight_layout()
+    filename = os.path.join(save_dir, f"graph-{parameters["beta"]}-epoch{parameters["epoch"] + 1:02d}.png")
     plt.savefig(filename, dpi=150, bbox_inches="tight")
     plt.close()
+    return G
+
+def visualise_growth(graphs_info: dict, epoch, save_path="graphs"):
+    """
+    graphs_info: dict[nx.Graph], каждый dict должен содержать:
+        - 'graph': networkx.Graph
+        - 'label': подпись на графике (например, "β=0.5, узел=7")
+        - optionally: 'color': цвет кривой
+    """
+
+    plt.figure(figsize=(6, 4))
+    ax = plt.gca()
+
+    for key in graphs_info.keys():
+        G = graphs_info[key]
+
+        # Search Central Node
+        centralities = nx.betweenness_centrality(G)
+        central_node = max(centralities, key=centralities.get)
+        print(central_node)
+
+        def compute_growth_layers(G: nx.Graph, central_node: int, max_depth: int = 5):
+            from collections import deque, defaultdict
+
+            visited = set()
+            queue = deque([(central_node, 0)])
+            growth = defaultdict(set)
+
+            while queue:
+                node, depth = queue.popleft()
+                if node in visited:
+                    continue
+                visited.add(node)
+                if depth > 0:
+                    growth[depth].add(node)
+                if depth < max_depth:
+                    for neighbor in G.neighbors(node):
+                        if neighbor not in visited:
+                            queue.append((neighbor, depth + 1))
+
+            return sorted([(k, len(v)) for k, v in growth.items()])
+
+        growth_data = compute_growth_layers(G, central_node, max_depth=6)
+        ks, ns = zip(*growth_data)
+        cumulative = [sum(ns[:i + 1]) for i in range(len(ns))]
+
+        ax.plot(ks, cumulative, marker='o', label=f"beta={key}")
+
+    ax.set_title("Growth", fontsize=9)
+    ax.set_xlabel("Distance from start")
+    ax.set_ylabel("Number of states in the layer")
+    ax.grid(True, linewidth=0.5, linestyle='--', alpha=0.6)
+    ax.legend(fontsize=8)
+    plt.tight_layout()
+
+    filename = os.path.join(save_path, f"growth-epoch{epoch + 1:02d}.png")
+    plt.savefig(filename, dpi=150, bbox_inches="tight")
+
+    plt.close()
+
 
 # Main function
 def main():
