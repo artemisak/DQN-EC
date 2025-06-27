@@ -321,7 +321,7 @@ def train_model(model, dataloader, epochs, lr, param_schema, save_path="trained_
             true_distribution, true_values, predicted_logits, predicted_values, latent_batch, edge_index_list, edge_attr_list = model(batch)
 
             # Calculate the combined loss function
-            loss = reconstruction_loss(true_distribution, predicted_logits, true_values, predicted_values, epoch, epochs)
+            loss = reconstruction_loss(true_distribution, predicted_logits, true_values, predicted_values, epoch, epochs) + 1e-6* l1_loss(edge_attr_list)
 
             # Backward and optimize
             optimizer.zero_grad()
