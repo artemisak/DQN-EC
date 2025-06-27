@@ -176,6 +176,10 @@ cython_debug/
 models/
 runs/
 wandb/
+graphs/
+resources/
 
 .idea/
 .DS_Store
+
+*.pth
