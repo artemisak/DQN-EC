@@ -1,5 +1,7 @@
+import csv
 from dataclasses import dataclass
 from typing import List
+from collections import deque, defaultdict
 
 from matplotlib.patches import Circle
 from networkx.drawing import draw_networkx_edges
@@ -214,7 +216,7 @@ class GraphAutoEncoder(nn.Module):
         reconstructed_labels = []
         reconstructed_values = []
         latent_list = []
-        beta_values = [0, 1, 2]
+
         beta_edges = {}
 
         for _, obs in enumerate(batch):
@@ -223,12 +225,13 @@ class GraphAutoEncoder(nn.Module):
 
             # Create a betta-skeleton graph (with beta = 1 we got the special case of Gabriel Graph)
             edge_index, edge_attr = self.create_gabriel_graph(latent)
-            for beta in beta_values:
-                if beta not in beta_edges:
-                    beta_edges[beta] = [[],[]]
-                edge_index, edge_attr = self.build_beta_skeleton(latent, beta)
-                beta_edges[beta][0].append(edge_index)
-                beta_edges[beta][1].append(edge_attr)
+            for beta in range(5,21, 1):
+                b = beta / 10
+                if b not in beta_edges:
+                    beta_edges[b] = [[],[]]
+                edge_index, edge_attr = self.build_beta_skeleton(latent, b)
+                beta_edges[b][0].append(edge_index)
+                beta_edges[b][1].append(edge_attr)
 
             # Create PyTorch Geometric Data object
             graph = Data(x=latent[:, 2].reshape(-1, 1), edge_index=edge_index)
@@ -333,8 +336,9 @@ def train_model(model, dataloader, epochs, lr, param_schema, save_path="trained_
                     parameters={"epoch": epoch, "beta": key},
                     param_schema=sorted_schema
                 )
-                graphs[key] = graph
+                graphs[key] = {"graph": graph, "schema": sorted_schema}
             visualise_growth(graphs, epoch)
+            calculate_graphs_metrics(graphs, epoch)
 
         avg_loss = epoch_loss / len(dataloader)
         train_losses.append(avg_loss)
@@ -592,15 +596,18 @@ def visualize_graph(latent_points, edge_index, edge_attr, parameters: dict, save
     table_nodes.auto_set_font_size(False)
     table_nodes.set_fontsize(7)
 
-    table_edges = ax_edges.table(
+    if len(edge_table_data) <= 1:
+        print("⚠ Warning: edge_table_data has no rows (only header). Skipping table rendering.")
+    else:
+        table_edges = ax_edges.table(
         cellText=edge_table_data[1:],
         colLabels=edge_table_data[0],
         loc="upper center",
         cellLoc='center',
         colWidths=edge_col_widths
-    )
-    table_edges.auto_set_font_size(False)
-    table_edges.set_fontsize(7)
+        )
+        table_edges.auto_set_font_size(False)
+        table_edges.set_fontsize(7)
 
     plt.tight_layout()
     filename = os.path.join(save_dir, f"graph-{parameters["beta"]}-epoch{parameters["epoch"] + 1:02d}.png")
@@ -608,7 +615,7 @@ def visualize_graph(latent_points, edge_index, edge_attr, parameters: dict, save
     plt.close()
     return G
 
-def visualise_growth(graphs_info: dict, epoch, save_path="graphs"):
+def visualise_growth(graphs_info: dict, epoch, save_path="graphs", is_use_central=False, is_use_weights=False):
     """
     graphs_info: dict[nx.Graph], каждый dict должен содержать:
         - 'graph': networkx.Graph
@@ -619,40 +626,71 @@ def visualise_growth(graphs_info: dict, epoch, save_path="graphs"):
     plt.figure(figsize=(6, 4))
     ax = plt.gca()
 
+    all_growth_records = []
+
+    def compute_growth_layers(graph: nx.Graph, start_node: int, max_depth: int = 5):
+        visited = set()
+        queue = deque([(start_node, 0)])
+        growth = defaultdict(set)
+        growth[0].add(start_node)
+
+        while queue:
+            node, depth = queue.popleft()
+            if node in visited:
+                continue
+            visited.add(node)
+            if depth > 0:
+                growth[depth].add(node)
+            if depth < max_depth:
+                for neighbor in graph.neighbors(node):
+                    if neighbor not in visited:
+                        queue.append((neighbor, depth + 1))
+
+        return sorted([(k, len(v)) for k, v in growth.items()])
+
     for key in graphs_info.keys():
-        G = graphs_info[key]
+        graph_info =  graphs_info[key]
+        G = graph_info["graph"]
+        schema = graph_info["schema"]
+        start_node = 0
 
-        # Search Central Node
-        centralities = nx.betweenness_centrality(G)
-        central_node = max(centralities, key=centralities.get)
-        print(central_node)
+        if is_use_central:
+            # Search Central Node
+            centralities = nx.betweenness_centrality(G)
+            start_node = max(centralities, key=centralities.get)
+            print(f"Central node for {key}: {start_node}")
+        else:
+            for idx in  range(0,len(schema)):
+                if schema[idx].name == "agent_type":
+                    start_node = idx
+                    break
+        print(f"Start node for compute graph has index {start_node}")
 
-        def compute_growth_layers(G: nx.Graph, central_node: int, max_depth: int = 5):
-            from collections import deque, defaultdict
+        growth_data = compute_growth_layers(G, start_node, max_depth=len(schema))
 
-            visited = set()
-            queue = deque([(central_node, 0)])
-            growth = defaultdict(set)
+        if not growth_data:
+            print(f"[Epoch {epoch}] ⚠ growth_data is empty {key}. Skipping growth visualization.")
+            continue
 
-            while queue:
-                node, depth = queue.popleft()
-                if node in visited:
-                    continue
-                visited.add(node)
-                if depth > 0:
-                    growth[depth].add(node)
-                if depth < max_depth:
-                    for neighbor in G.neighbors(node):
-                        if neighbor not in visited:
-                            queue.append((neighbor, depth + 1))
-
-            return sorted([(k, len(v)) for k, v in growth.items()])
-
-        growth_data = compute_growth_layers(G, central_node, max_depth=6)
         ks, ns = zip(*growth_data)
         cumulative = [sum(ns[:i + 1]) for i in range(len(ns))]
 
+        # Добавление данных к общему списку
+        for i in range(len(ks)):
+            all_growth_records.append({
+                "GraphKey": key,
+                "Layer": ks[i],
+                "NewNodes": ns[i],
+                "CumulativeNodes": cumulative[i]
+            })
+
         ax.plot(ks, cumulative, marker='o', label=f"beta={key}")
+
+    data_filename = os.path.join(save_path, f"growth_all_data-epoch{epoch + 1:02d}.csv")
+    with open(data_filename, mode='w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=["GraphKey", "Layer", "NewNodes", "CumulativeNodes"])
+        writer.writeheader()
+        writer.writerows(all_growth_records)
 
     ax.set_title("Growth", fontsize=9)
     ax.set_xlabel("Distance from start")
@@ -666,6 +704,52 @@ def visualise_growth(graphs_info: dict, epoch, save_path="graphs"):
 
     plt.close()
 
+def calculate_graph_metrics(G):
+    metrics = {}
+
+    metrics["num_nodes"] = G.number_of_nodes()
+    metrics["num_edges"] = G.number_of_edges()
+    metrics["density"] = nx.density(G)
+    metrics["avg_degree"] = sum(dict(G.degree()).values()) / G.number_of_nodes()
+    metrics["avg_clustering"] = nx.average_clustering(G)
+    metrics["assortativity"] = nx.degree_assortativity_coefficient(G)
+    metrics["num_components"] = nx.number_connected_components(G)
+
+    largest_cc = max(nx.connected_components(G), key=len)
+    metrics["size_largest_cc"] = len(largest_cc)
+
+    if nx.is_connected(G):
+        metrics["avg_path_length"] = nx.average_shortest_path_length(G)
+        metrics["diameter"] = nx.diameter(G)
+        metrics["radius"] = nx.radius(G)
+    else:
+        metrics["avg_path_length"] = None
+        metrics["diameter"] = None
+        metrics["radius"] = None
+
+    return metrics
+
+def calculate_graphs_metrics(graphs_info: dict, epoch: int, save_path="graphs/graph_metrics_all.csv"):
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+
+    rows = []
+    for beta, info in graphs_info.items():
+        G = info['graph']
+        metrics = calculate_graph_metrics(G)
+        metrics["epoch"] = epoch
+        metrics["beta"] = beta
+        rows.append(metrics)
+
+    file_exists = os.path.exists(save_path)
+    fieldnames = ["epoch", "beta"] + [k for k in rows[0] if k not in ["epoch", "beta", "label"]]
+
+    with open(save_path, mode='a', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+
+        if not file_exists:
+            writer.writeheader()
+
+        writer.writerows(rows)
 
 # Main function
 def main():
