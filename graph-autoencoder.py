@@ -1,3 +1,4 @@
+import tyro
 import csv
 from dataclasses import dataclass
 from typing import List
@@ -24,6 +25,37 @@ from datetime import datetime
 # Determine device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
+
+@dataclass
+class Config:
+    # Model architecture parameters
+    input_dim: int = 5                      # Input feature dimension for encoder
+    output_dim: int = 3                     # Output dimension of latent embedding
+    hidden_dim: int = 64                    # Hidden layer size used throughout GAT layers and MLP
+
+    # Training hyperparameters
+    epochs: int = 30                        # Total number of training epochs
+    lr: float = 0.0025                      # Learning rate for optimizer
+    model_save_path: str = "model"          # Path where trained model will be saved
+
+    # Data generation
+    num_samples: int = 1024                 # Number of synthetic samples to generate from the environment
+    batch_size: int = 64                    # Batch size used in training
+
+    # Learning rate scheduler parameters
+    factor: float = 0.5                     # Factor by which the learning rate will be reduced
+    patience: int = 5                       # Number of epochs with no improvement after which LR will be reduced
+
+    # Other training parameters
+    alpha: float = 0.1                      # Skip connection blending coefficient in GAT
+    max_norm: float = 1.0                   # Maximum norm for gradient clipping
+
+    # Metrics save path
+
+
+    # Visualization parameters
+    visualise: bool = False                 # Enable create visualisation of epochs
+    visual_save_path: str = "results"       # Path where visualisation will be saved
 
 GRAY_FORWARD_MAPPING = {
     1: [0, 0, 0, 0], # agent_type
@@ -53,6 +85,19 @@ GRAY_INVERTED_MAPPING = {
     (1, 1, 0, 1): 10,
     (1, 1, 1, 1): 11,
     (1, 1, 1, 0): 12
+}
+
+@dataclass
+class NodeDescriptor:
+    name: str
+    group: str
+
+group_color_map = {
+    "self_vel": "#1f77b4",
+    "landmark": "#2ca02c",
+    "target": "#f54242",
+    "agent": "#8202fa",
+    "unknown": "#7f7f7f"
 }
 
 class GraphAutoEncoder(nn.Module):
@@ -276,11 +321,11 @@ def l1_loss(edge_attr_list):
     """
     return torch.norm(torch.cat(edge_attr_list), p=1)
 
-def train_model(model, dataloader, epochs, lr, param_schema, save_path="trained_model.pth"):
+def train_model(model, dataloader, epochs, lr, factor, patience, param_schema, model_save_path="trained_model.pth", is_need_visualization=False, visual_save_path="results"):
     """Train with only reconstruction loss for better convergence"""
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=5
+        optimizer, mode='min', factor=factor, patience=patience
     )
 
     train_losses = []
@@ -316,29 +361,30 @@ def train_model(model, dataloader, epochs, lr, param_schema, save_path="trained_
             print('=' * 50, 'Reconstructed values', '=' * 50)
             print(predicted_values[0])
 
-            idx = 11
-            obs = batch[idx]
-            variable_order = []
+            if is_need_visualization:
+                idx = 11
+                obs = batch[idx]
+                variable_order = []
 
-            for row in obs:
-                key = tuple(row[:4].int().tolist())
-                var_id = GRAY_INVERTED_MAPPING.get(key, None)
-                variable_order.append(var_id)
-            sorted_schema = [param_schema[i - 1] for i in variable_order]
+                for row in obs:
+                    key = tuple(row[:4].int().tolist())
+                    var_id = GRAY_INVERTED_MAPPING.get(key, None)
+                    variable_order.append(var_id)
+                sorted_schema = [param_schema[i - 1] for i in variable_order]
 
-            graphs = {}
-            for key in beta_edges.keys():
-                edge_index_list, edge_attr_list = beta_edges[key][0], beta_edges[key][1]
-                graph = visualize_graph(
-                    latent_points=latent_batch[idx],
-                    edge_index=edge_index_list[idx],
-                    edge_attr=edge_attr_list[idx],
-                    parameters={"epoch": epoch, "beta": key},
-                    param_schema=sorted_schema
-                )
-                graphs[key] = {"graph": graph, "schema": sorted_schema}
-            visualise_growth(graphs, epoch)
-            calculate_graphs_metrics(graphs, epoch)
+                graphs = {}
+                for key in beta_edges.keys():
+                    edge_index_list, edge_attr_list = beta_edges[key][0], beta_edges[key][1]
+                    graph = visualize_graph(
+                        latent_points=latent_batch[idx],
+                        edge_index=edge_index_list[idx],
+                        edge_attr=edge_attr_list[idx],
+                        parameters={"epoch": epoch, "beta": key},
+                        param_schema=sorted_schema
+                    )
+                    graphs[key] = {"graph": graph, "schema": sorted_schema}
+                visualise_growth(graphs, epoch)
+                calculate_graphs_metrics(graphs, epoch)
 
         avg_loss = epoch_loss / len(dataloader)
         train_losses.append(avg_loss)
@@ -360,9 +406,9 @@ def train_model(model, dataloader, epochs, lr, param_schema, save_path="trained_
             'output_dim': 3,
             'hidden_dim': 64
         }
-    }, save_path)
+    }, model_save_path)
     
-    print(f"Model saved to {save_path}")
+    print(f"Model saved to {model_save_path}")
 
 
 # Generate sample data
@@ -413,20 +459,9 @@ def generate_sample_data(num_samples=1024, batch_size=64):
         shuffle=True
     )
 
-@dataclass
-class NodeDescriptor:
-    name: str
-    group: str
 
-group_color_map = {
-    "self_vel": "#1f77b4",
-    "landmark": "#2ca02c",
-    "target": "#f54242",
-    "agent": "#8202fa",
-    "unknown": "#7f7f7f"
-}
 
-def visualize_graph(latent_points, edge_index, edge_attr, parameters: dict, save_dir="graphs", param_schema=None) -> nx.Graph:
+def visualize_graph(latent_points, edge_index, edge_attr, parameters: dict, param_schema=None, visual_save_path="results") -> nx.Graph:
     """
     Visualisation Graph
 
@@ -436,7 +471,7 @@ def visualize_graph(latent_points, edge_index, edge_attr, parameters: dict, save
     :param save_dir:
     :param
     """
-    os.makedirs(save_dir, exist_ok=True)
+    os.makedirs(visual_save_path, exist_ok=True)
 
     G = nx.Graph()
     positions = {}
@@ -610,12 +645,12 @@ def visualize_graph(latent_points, edge_index, edge_attr, parameters: dict, save
         table_edges.set_fontsize(7)
 
     plt.tight_layout()
-    filename = os.path.join(save_dir, f"graph-{parameters["beta"]}-epoch{parameters["epoch"] + 1:02d}.png")
+    filename = os.path.join(visual_save_path, f"graph-{parameters["beta"]}-epoch{parameters["epoch"] + 1:02d}.png")
     plt.savefig(filename, dpi=150, bbox_inches="tight")
     plt.close()
     return G
 
-def visualise_growth(graphs_info: dict, epoch, save_path="graphs", is_use_central=False, is_use_weights=False):
+def visualise_growth(graphs_info: dict, epoch, visual_save_path="results", is_use_central=False):
     """
     graphs_info: dict[nx.Graph], каждый dict должен содержать:
         - 'graph': networkx.Graph
@@ -664,7 +699,7 @@ def visualise_growth(graphs_info: dict, epoch, save_path="graphs", is_use_centra
                 if schema[idx].name == "agent_type":
                     start_node = idx
                     break
-        print(f"Start node for compute graph has index {start_node}")
+        # print(f"Start node for compute graph has index {start_node}")
 
         growth_data = compute_growth_layers(G, start_node, max_depth=len(schema))
 
@@ -686,7 +721,7 @@ def visualise_growth(graphs_info: dict, epoch, save_path="graphs", is_use_centra
 
         ax.plot(ks, cumulative, marker='o', label=f"beta={key}")
 
-    data_filename = os.path.join(save_path, f"growth_all_data-epoch{epoch + 1:02d}.csv")
+    data_filename = os.path.join(visual_save_path, f"growth_all_data-epoch{epoch + 1:02d}.csv")
     with open(data_filename, mode='w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=["GraphKey", "Layer", "NewNodes", "CumulativeNodes"])
         writer.writeheader()
@@ -699,7 +734,7 @@ def visualise_growth(graphs_info: dict, epoch, save_path="graphs", is_use_centra
     ax.legend(fontsize=8)
     plt.tight_layout()
 
-    filename = os.path.join(save_path, f"growth-epoch{epoch + 1:02d}.png")
+    filename = os.path.join(visual_save_path, f"growth-epoch{epoch + 1:02d}.png")
     plt.savefig(filename, dpi=150, bbox_inches="tight")
 
     plt.close()
@@ -729,8 +764,8 @@ def calculate_graph_metrics(G):
 
     return metrics
 
-def calculate_graphs_metrics(graphs_info: dict, epoch: int, save_path="graphs/graph_metrics_all.csv"):
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+def calculate_graphs_metrics(graphs_info: dict, epoch: int, metrics_save_path="results/graph_metrics_all.csv"):
+    os.makedirs(os.path.dirname(metrics_save_path), exist_ok=True)
 
     rows = []
     for beta, info in graphs_info.items():
@@ -740,10 +775,10 @@ def calculate_graphs_metrics(graphs_info: dict, epoch: int, save_path="graphs/gr
         metrics["beta"] = beta
         rows.append(metrics)
 
-    file_exists = os.path.exists(save_path)
+    file_exists = os.path.exists(metrics_save_path)
     fieldnames = ["epoch", "beta"] + [k for k in rows[0] if k not in ["epoch", "beta", "label"]]
 
-    with open(save_path, mode='a', newline='') as f:
+    with open(metrics_save_path, mode='a', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
 
         if not file_exists:
@@ -753,19 +788,20 @@ def calculate_graphs_metrics(graphs_info: dict, epoch: int, save_path="graphs/gr
 
 # Main function
 def main():
-    # Create directories for saving outputs
-    os.makedirs("training_graphs", exist_ok=True)
-    
+    config = tyro.cli(Config)
     # Generate dataset
-    dataloader = generate_sample_data()
+    dataloader = generate_sample_data(
+        num_samples=config.num_samples,
+        batch_size=config.batch_size
+    )
 
     # Create model
-    model = GraphAutoEncoder().to(device)
+    model = GraphAutoEncoder(
+        input_dim=config.input_dim,
+        output_dim=config.output_dim,
+        hidden_dim=config.hidden_dim
+    ).to(device)
     print(model)
-
-    # Create a timestamped model filename
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    model_filename = f"graph_autoencoder_{timestamp}.pth"
 
     param_schema: List[NodeDescriptor] = [
         NodeDescriptor("vel-x", "self_vel"),
@@ -781,14 +817,20 @@ def main():
         NodeDescriptor("is_landmark_3_target", "target"),
         NodeDescriptor("agent_type", "agent"),
     ]
-    # Hyperparameters for training
+
+    # Create a timestamped model filename
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    model_filename = f"graph_autoencoder_{timestamp}.pth"
+
     train_model(
         model,
         dataloader,
-        epochs=30,
-        lr=0.0025,
+        epochs=config.epochs,
+        lr=config.lr,
+        factor=config.factor,
+        patience=config.patience,
         param_schema=param_schema,
-        save_path=model_filename
+        model_save_path=f"{config.model_save_path}/{model_filename}"
     )
     
     print(f"Training completed! Model saved as {model_filename}")
