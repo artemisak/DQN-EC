@@ -12,10 +12,31 @@ This project includes an implementation of a **Graph AutoEncoder** for encoding 
 
 Train the model and generate visualizations:
 ```bash
-python graph_autoencoder.py
+python graph-autoencoder.py [arguments]
 ```
 
-### Outputs
+### Install Dependencies
+
+### Command-Line Arguments
+
+| Argument             | Type     | Default Value          | Description |
+|----------------------|----------|-------------------------|-------------|
+| `--input-dim`        | `int`    | `5`                     | Input feature dimension for encoder |
+| `--output-dim`       | `int`    | `3`                     | Output dimension of the latent embedding |
+| `--hidden-dim`       | `int`    | `64`                    | Hidden layer size used throughout GAT and MLP |
+| `--epochs`           | `int`    | `30`                    | Number of training epochs |
+| `--lr`               | `float`  | `0.0025`                | Learning rate |
+| `--save-path`        | `str`    | `"trained_model.pth"`   | Path to save the trained model |
+| `--num-samples`      | `int`    | `1024`                  | Number of synthetic samples generated from the environment |
+| `--batch-size`       | `int`    | `64`                    | Training batch size |
+| `--factor`           | `float`  | `0.5`                   | LR scheduler: reduce factor |
+| `--patience`         | `int`    | `5`                     | LR scheduler: patience before reducing LR |
+| `--alpha`            | `float`  | `0.1`                   | Skip connection blending coefficient in GAT layers |
+| `--max-norm`         | `float`  | `1.0`                   | Gradient clipping max norm |
+
+
+Input feature dimension for encoder       | 
+### Output Artifacts
 
 - Model Checkpoint:
   - Saved to graph_autoencoder_YYYYMMDD_HHMMSS.pth
