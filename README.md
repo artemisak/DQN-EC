@@ -15,8 +15,6 @@ Train the model and generate visualizations:
 python graph-autoencoder.py [arguments]
 ```
 
-### Install Dependencies
-
 ### Command-Line Arguments
 
 | Argument             | Type     | Default Value          | Description |
