@@ -48,12 +48,13 @@ class Config:
     # Other training parameters
     alpha: float = 0.1                      # Skip connection blending coefficient in GAT
     max_norm: float = 1.0                   # Maximum norm for gradient clipping
+    gamma: float = 0.1
 
     # Parameters for configure results output
-    visualise: bool = False                 # Enable create visualisation of epochs
+    visualise: bool = False                          # Enable create visualisation of epochs
     visual_save_path: str = "results/graphics"       # Path where visualisation will be saved
     save_metrics: bool = False                       # Whether to save metrics to disk
-    data_save_path: str = "results/data"
+    data_save_path: str = "results/metrics"             # Path where metrics will be saved
 
 GRAY_FORWARD_MAPPING = {
     1: [0, 0, 0, 0], # agent_type
@@ -303,7 +304,15 @@ class GraphAutoEncoder(nn.Module):
 
 
 # Improved reconstruction loss with dimension-specific weighting
-def reconstruction_loss(true_distribution, predicted_logits, true_values, predicted_values, epoch, total_epochs):
+def reconstruction_loss(
+        true_distribution: torch.Tensor,
+        predicted_logits: torch.Tensor,
+        true_values: torch.Tensor,
+        predicted_values: torch.Tensor,
+        epoch: int,
+        total_epochs: int,
+        gamma: float
+):
     """
     Reconstruction loss
     """
@@ -311,8 +320,8 @@ def reconstruction_loss(true_distribution, predicted_logits, true_values, predic
     values_mse = F.l1_loss(predicted_values, true_values)
 
     progress = epoch / total_epochs
-    weight1 = 1.0 - 0.9 * progress
-    weight2 = 0.1 + 0.9 * progress
+    weight1 = 1.0 - (1-gamma) * progress
+    weight2 = gamma + (1-gamma) * progress
 
     return  weight1 * labels_kl + weight2 * values_mse
 
@@ -329,20 +338,19 @@ def train_model(
         lr: float,
         factor: float,
         patience: int,
+        gamma: float,
         param_schema: list[NodeDescriptor],
         model_save_path: str ="trained_model.pth",
         is_visual: bool = False,
         visual_save_path: str = "results/graphics",
         is_save: bool = False,
-        data_save_path: str = "results/data"
+        data_save_path: str = "results/metrics"
 ):
     """Train with only reconstruction loss for better convergence"""
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='min', factor=factor, patience=patience
     )
-
-    train_losses = []
 
     for epoch in range(epochs):
         model.train()
@@ -354,7 +362,15 @@ def train_model(
             true_distribution, true_values, predicted_logits, predicted_values, latent_batch, beta_edges = model(batch)
 
             # Calculate the combined loss function
-            loss = reconstruction_loss(true_distribution, predicted_logits, true_values, predicted_values, epoch, epochs)
+            loss = reconstruction_loss(
+                true_distribution=true_distribution,
+                predicted_logits=predicted_logits,
+                true_values=true_values,
+                predicted_values=predicted_values,
+                epoch=epoch,
+                total_epochs=epochs,
+                gamma=gamma
+            )
 
             # Backward and optimize
             optimizer.zero_grad()
@@ -366,9 +382,14 @@ def train_model(
 
 
         avg_loss = epoch_loss / len(dataloader)
-        train_losses.append(avg_loss)
 
         print(f'Epoch [{epoch + 1}/{epochs}], Avg Loss: {avg_loss:.6f}')
+        if is_save:
+            save_loss_log(
+                epoch=epoch+1,
+                avg_loss=avg_loss,
+                data_save_path=data_save_path
+            )
 
         # Update learning rate based on validation loss
         scheduler.step(avg_loss)
@@ -401,7 +422,7 @@ def train_model(
                     latent_points=latent_batch[idx],
                     edge_index=edge_index_list[idx],
                     edge_attr=edge_attr_list[idx],
-                    parameters={"epoch": epoch, "beta": key},
+                    parameters={"epoch": epoch+1, "beta": key},
                     param_schema=sorted_schema,
                     is_visual=is_visual,
                     visual_save_path=visual_save_path
@@ -410,7 +431,7 @@ def train_model(
 
             calculate_growth(
                 graphs,
-                epoch,
+                epoch+1,
                 is_visual=is_visual,
                 visual_save_path=visual_save_path,
                 is_save=is_save,
@@ -522,7 +543,6 @@ def create_graph(
             G=G,
             positions=positions,
             latent_points=latent_points,
-            edge_index=edge_index,
             edge_labels=edge_labels,
             parameters=parameters,
             param_schema=param_schema,
@@ -530,11 +550,25 @@ def create_graph(
         )
     return G
 
+def save_loss_log(
+        epoch: int,
+        avg_loss: float,
+        data_save_path: str = "results/metrics"
+):
+    os.makedirs(os.path.dirname(data_save_path), exist_ok=True)
+    filepath=f"{data_save_path}/loss_log.csv"
+    file_exists = os.path.exists(filepath)
+
+    with open(filepath, mode='w', newline='') as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow(["Epoch", "AvgLoss"])
+        writer.writerow([epoch, avg_loss])
+
 def visualize_graph(
         G,
         positions,
         latent_points,
-        edge_index,
         edge_labels,
         parameters: dict,
         param_schema=List[NodeDescriptor],
@@ -704,7 +738,7 @@ def calculate_growth(
         is_visual: bool = False,
         visual_save_path: str = "results/graphics",
         is_save: bool = False,
-        data_save_path: str = "results/data"
+        data_save_path: str = "results/metrics"
 ):
     all_growth_records = []
 
@@ -743,11 +777,11 @@ def calculate_growth(
             })
 
         if is_visual:
-            plot_path = os.path.join(visual_save_path, f"growth-epoch{epoch + 1:02d}.png")
+            plot_path = os.path.join(visual_save_path, f"growth-epoch{epoch:02d}.png")
             plot_growth_curves(all_growth_records, plot_path)
 
         if is_save:
-            csv_path = os.path.join(data_save_path, f"growth_all_data-epoch{epoch + 1:02d}.csv")
+            csv_path = os.path.join(data_save_path, f"growth_all_data-epoch{epoch:02d}.csv")
             save_growth_data_csv(all_growth_records, csv_path)
 
 def compute_growth_layers(graph: nx.Graph, start_node: int, max_depth: int = 5):
@@ -799,15 +833,14 @@ def plot_growth_curves(growth_records: List[dict], output_path: str):
     plt.close()
 
 def calculate_graph_metrics(G):
-    metrics = {}
-
-    metrics["num_nodes"] = G.number_of_nodes()
-    metrics["num_edges"] = G.number_of_edges()
-    metrics["density"] = nx.density(G)
-    metrics["avg_degree"] = sum(dict(G.degree()).values()) / G.number_of_nodes()
-    metrics["avg_clustering"] = nx.average_clustering(G)
-    metrics["assortativity"] = nx.degree_assortativity_coefficient(G)
-    metrics["num_components"] = nx.number_connected_components(G)
+    metrics = {
+        "num_nodes": G.number_of_nodes(),
+        "num_edges": G.number_of_edges(),
+        "density": nx.density(G),
+        "avg_degree": sum(dict(G.degree()).values()) / G.number_of_nodes(),
+        "avg_clustering": nx.average_clustering(G), "assortativity": nx.degree_assortativity_coefficient(G),
+        "num_components": nx.number_connected_components(G)
+    }
 
     largest_cc = max(nx.connected_components(G), key=len)
     metrics["size_largest_cc"] = len(largest_cc)
@@ -823,9 +856,12 @@ def calculate_graph_metrics(G):
 
     return metrics
 
-def calculate_graphs_metrics(graphs_info: dict, epoch: int, metrics_save_path="results/graph_metrics_all.csv"):
-    os.makedirs(os.path.dirname(metrics_save_path), exist_ok=True)
-
+def calculate_graphs_metrics(
+        graphs_info: dict,
+        epoch: int,
+        is_save: bool = False,
+        data_save_path: str = "results/metrics"
+):
     rows = []
     for beta, info in graphs_info.items():
         G = info['graph']
@@ -834,16 +870,26 @@ def calculate_graphs_metrics(graphs_info: dict, epoch: int, metrics_save_path="r
         metrics["beta"] = beta
         rows.append(metrics)
 
-    file_exists = os.path.exists(metrics_save_path)
-    fieldnames = ["epoch", "beta"] + [k for k in rows[0] if k not in ["epoch", "beta", "label"]]
+    if is_save:
+        save_graphs_metrics(
+            metrics=rows,
+            metrics_save_path=data_save_path
+        )
 
-    with open(metrics_save_path, mode='a', newline='') as f:
+def save_graphs_metrics(
+        metrics: list[dict],
+        metrics_save_path="results/metrics"
+):
+    os.makedirs(os.path.dirname(metrics_save_path), exist_ok=True)
+    file_path = f"{metrics_save_path}/graph_metrics_all.csv"
+    file_exists = os.path.exists(file_path)
+    fieldnames = ["epoch", "beta"] + [k for k in metrics[0] if k not in ["epoch", "beta", "label"]]
+
+    with open(file_path, mode='a', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
-
         if not file_exists:
             writer.writeheader()
-
-        writer.writerows(rows)
+        writer.writerows(metrics)
 
 # Main function
 def main():
@@ -888,6 +934,7 @@ def main():
         lr=config.lr,
         factor=config.factor,
         patience=config.patience,
+        gamma=config.gamma,
         param_schema=param_schema,
         model_save_path=f"{config.model_save_path}/{model_filename}",
         is_visual=config.visualise,
