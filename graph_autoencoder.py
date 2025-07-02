@@ -50,11 +50,14 @@ class Config:
     max_norm: float = 1.0                   # Maximum norm for gradient clipping
     gamma: float = 0.1
 
+    # Metrics Parameters
+    is_growth_from_central: bool = False  # Enable calculate growth from central user node
+
     # Parameters for configure results output
     visualise: bool = False                          # Enable create visualisation of epochs
     visual_save_path: str = "results/graphics"       # Path where visualisation will be saved
     save_metrics: bool = False                       # Whether to save metrics to disk
-    data_save_path: str = "results/metrics"             # Path where metrics will be saved
+    data_save_path: str = "results/metrics"          # Path where metrics will be saved
 
 GRAY_FORWARD_MAPPING = {
     1: [0, 0, 0, 0], # agent_type
@@ -340,6 +343,7 @@ def train_model(
         patience: int,
         gamma: float,
         param_schema: list[NodeDescriptor],
+        is_growth_from_central: bool = False,
         model_save_path: str ="trained_model.pth",
         is_visual: bool = False,
         visual_save_path: str = "results/graphics",
@@ -432,6 +436,7 @@ def train_model(
             calculate_growth(
                 graphs,
                 epoch+1,
+                is_growth_from_central=is_growth_from_central,
                 is_visual=is_visual,
                 visual_save_path=visual_save_path,
                 is_save=is_save,
@@ -555,11 +560,11 @@ def save_loss_log(
         avg_loss: float,
         data_save_path: str = "results/metrics"
 ):
-    os.makedirs(os.path.dirname(data_save_path), exist_ok=True)
+    os.makedirs(data_save_path, exist_ok=True)
     filepath=f"{data_save_path}/loss_log.csv"
     file_exists = os.path.exists(filepath)
 
-    with open(filepath, mode='w', newline='') as f:
+    with open(filepath, mode='a', newline='') as f:
         writer = csv.writer(f)
         if not file_exists:
             writer.writerow(["Epoch", "AvgLoss"])
@@ -734,7 +739,7 @@ def visualize_graph(
 def calculate_growth(
         graphs_info: dict,
         epoch: int,
-        is_use_central: bool = False,
+        is_growth_from_central: bool = False,
         is_visual: bool = False,
         visual_save_path: str = "results/graphics",
         is_save: bool = False,
@@ -747,7 +752,7 @@ def calculate_growth(
         schema = graph_info["schema"]
         start_node = 0
 
-        if is_use_central:
+        if is_growth_from_central:
             # Search Central Node
             centralities = nx.betweenness_centrality(G)
             start_node = max(centralities, key=centralities.get)
@@ -881,11 +886,11 @@ def save_graphs_metrics(
         metrics_save_path="results/metrics"
 ):
     os.makedirs(os.path.dirname(metrics_save_path), exist_ok=True)
-    file_path = f"{metrics_save_path}/graph_metrics_all.csv"
-    file_exists = os.path.exists(file_path)
+    filepath = f"{metrics_save_path}/graph_metrics_all.csv"
+    file_exists = os.path.exists(filepath)
     fieldnames = ["epoch", "beta"] + [k for k in metrics[0] if k not in ["epoch", "beta", "label"]]
 
-    with open(file_path, mode='a', newline='') as f:
+    with open(filepath, mode='a', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         if not file_exists:
             writer.writeheader()
@@ -936,6 +941,7 @@ def main():
         patience=config.patience,
         gamma=config.gamma,
         param_schema=param_schema,
+        is_growth_from_central=config.is_growth_from_central,
         model_save_path=f"{config.model_save_path}/{model_filename}",
         is_visual=config.visualise,
         visual_save_path=config.visual_save_path,
