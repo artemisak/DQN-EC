@@ -483,30 +483,12 @@ def generate_sample_data(num_samples=1024, batch_size=64):
         shuffle=True
     )
 
-def create_networkx_graph(latent_points, edge_index):
-    G = nx.Graph()
-    positions = {}
-
-    # Добавляем узлы и их позиции
-    for i in range(latent_points.shape[0]):
-        x, y = latent_points[i][0].item(), latent_points[i][1].item()
-        G.add_node(i)
-        positions[i] = (x, y)
-
-    # Добавляем рёбра
-    if edge_index.numel() > 0:  # Проверяем, что есть рёбра
-        edges = edge_index.t().cpu().numpy()
-        for src, tgt in edges:
-            G.add_edge(src, tgt)
-
-    return G, positions
-
 def create_graph(
         latent_points,
         edge_index,
         edge_attr,
         parameters: dict,
-        param_schema=None,
+        param_schema=List[NodeDescriptor],
         is_visual: bool = False,
         visual_save_path: str = "results/graphics",
 ) -> nx.Graph:
@@ -518,8 +500,9 @@ def create_graph(
         G.add_node(i)
         positions[i] = (x, y)
 
+    edges = edge_index.t().cpu().numpy()
+
     if edge_index.numel() > 0:
-        edges = edge_index.t().cpu().numpy()
         if edge_attr is not None:
             weights = edge_attr.detach().cpu().numpy()
             for (src, tgt), weight in zip(edges, weights):
@@ -529,15 +512,21 @@ def create_graph(
                 G.add_edge(src, tgt)
 
     if is_visual:
+        weights = edge_attr.detach().cpu().numpy()
+        edge_labels = {}
+        for (src, tgt), weight in zip(edges, weights):
+            G.add_edge(src, tgt, weight=weight)
+            edge_labels[(src, tgt)] = float(weight)
+
         visualize_graph(
-            G,
-            positions,
-            latent_points,
-            edge_index,
-            edge_attr,
-            param_schema,
-            parameters,
-            visual_save_path
+            G=G,
+            positions=positions,
+            latent_points=latent_points,
+            edge_index=edge_index,
+            edge_labels=edge_labels,
+            parameters=parameters,
+            param_schema=param_schema,
+            visual_save_path=visual_save_path
         )
     return G
 
@@ -546,9 +535,9 @@ def visualize_graph(
         positions,
         latent_points,
         edge_index,
-        edge_attr,
+        edge_labels,
         parameters: dict,
-        param_schema=None,
+        param_schema=List[NodeDescriptor],
         visual_save_path: str = "results/graphics",
 ):
 
@@ -643,24 +632,18 @@ def visualize_graph(
     ax_nodes.axis('off')
     ax_edges.axis('off')
 
-    node_table_data = []
-    node_table_data.append(["No.", "Name", "X", "Y"])
+    node_table_data = [["No.", "Name", "X", "Y"]]
     for i in range(len(latent_points)):
         name = param_schema[i].name if param_schema else f"node_{i}"
         x_val = latent_points[i][0].item()
         y_val = latent_points[i][1].item()
         node_table_data.append([str(i), name, f"{x_val:.3f}", f"{y_val:.3f}"])
 
-    edge_table_data = []
-    edge_table_data.append(["From", "To", "Weight"])
-    if edge_index.numel() > 0:
-        edges = edge_index.t().cpu().numpy()
-        if edge_attr is not None:
-            weights = edge_attr.detach().cpu().numpy()
-            for (src, tgt), weight in zip(edges, weights):
-                src_name = param_schema[src].name if param_schema else f"node_{src}"
-                tgt_name = param_schema[tgt].name if param_schema else f"node_{tgt}"
-                edge_table_data.append([src_name, tgt_name, f"{weight:.3f}"])
+    edge_table_data = [["From", "To", "Weight"]]
+    for (src, tgt), weight in edge_labels.items():
+        src_name = param_schema[src].name if param_schema else f"node_{src}"
+        tgt_name = param_schema[tgt].name if param_schema else f"node_{tgt}"
+        edge_table_data.append([src_name, tgt_name, f"{weight:.3f}"])
 
     def calculate_column_widths(data):
         if not data:
