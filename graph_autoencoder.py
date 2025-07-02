@@ -1,6 +1,5 @@
 import tyro
 import csv
-from dataclasses import dataclass
 from typing import List
 from collections import deque, defaultdict
 
@@ -50,12 +49,11 @@ class Config:
     alpha: float = 0.1                      # Skip connection blending coefficient in GAT
     max_norm: float = 1.0                   # Maximum norm for gradient clipping
 
-    # Metrics save path
-
-
-    # Visualization parameters
+    # Parameters for configure results output
     visualise: bool = False                 # Enable create visualisation of epochs
-    visual_save_path: str = "results"       # Path where visualisation will be saved
+    visual_save_path: str = "results/graphics"       # Path where visualisation will be saved
+    save_metrics: bool = False                       # Whether to save metrics to disk
+    data_save_path: str = "results/data"
 
 GRAY_FORWARD_MAPPING = {
     1: [0, 0, 0, 0], # agent_type
@@ -101,7 +99,11 @@ group_color_map = {
 }
 
 class GraphAutoEncoder(nn.Module):
-    def __init__(self, input_dim=5, output_dim=3, hidden_dim=64):
+    def __init__(self,
+        input_dim=5,
+        output_dim=3,
+        hidden_dim=64
+        ):
         super(GraphAutoEncoder, self).__init__()
 
         # Encoder MLP
@@ -139,7 +141,6 @@ class GraphAutoEncoder(nn.Module):
         if isinstance(m, nn.Linear):
             nn.init.kaiming_uniform_(m.weight, mode='fan_in', nonlinearity='relu')
             nn.init.zeros_(m.bias)
-
 
     def create_gabriel_graph(self, points):
         """Create Gabriel graph with minimal preprocessing to preserve information"""
@@ -321,7 +322,20 @@ def l1_loss(edge_attr_list):
     """
     return torch.norm(torch.cat(edge_attr_list), p=1)
 
-def train_model(model, dataloader, epochs, lr, factor, patience, param_schema, model_save_path="trained_model.pth", is_need_visualization=False, visual_save_path="results"):
+def train_model(
+        model,
+        dataloader,
+        epochs: int,
+        lr: float,
+        factor: float,
+        patience: int,
+        param_schema: list[NodeDescriptor],
+        model_save_path: str ="trained_model.pth",
+        is_visual: bool = False,
+        visual_save_path: str = "results/graphics",
+        is_save: bool = False,
+        data_save_path: str = "results/data"
+):
     """Train with only reconstruction loss for better convergence"""
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -350,6 +364,15 @@ def train_model(model, dataloader, epochs, lr, factor, patience, param_schema, m
 
             epoch_loss += loss.item()
 
+
+        avg_loss = epoch_loss / len(dataloader)
+        train_losses.append(avg_loss)
+
+        print(f'Epoch [{epoch + 1}/{epochs}], Avg Loss: {avg_loss:.6f}')
+
+        # Update learning rate based on validation loss
+        scheduler.step(avg_loss)
+
         if (epoch % 5 == 0) or (epoch == epochs - 1):
             print(f'Epoch: {epoch}')
             print('='*50, 'Original labels', '='*50)
@@ -361,38 +384,39 @@ def train_model(model, dataloader, epochs, lr, factor, patience, param_schema, m
             print('=' * 50, 'Reconstructed values', '=' * 50)
             print(predicted_values[0])
 
-            if is_need_visualization:
-                idx = 11
-                obs = batch[idx]
-                variable_order = []
+            idx = 11
+            obs = batch[idx]
+            variable_order = []
 
-                for row in obs:
-                    key = tuple(row[:4].int().tolist())
-                    var_id = GRAY_INVERTED_MAPPING.get(key, None)
-                    variable_order.append(var_id)
-                sorted_schema = [param_schema[i - 1] for i in variable_order]
+            for row in obs:
+                key = tuple(row[:4].int().tolist())
+                var_id = GRAY_INVERTED_MAPPING.get(key, None)
+                variable_order.append(var_id)
+            sorted_schema = [param_schema[i - 1] for i in variable_order]
 
-                graphs = {}
-                for key in beta_edges.keys():
-                    edge_index_list, edge_attr_list = beta_edges[key][0], beta_edges[key][1]
-                    graph = visualize_graph(
-                        latent_points=latent_batch[idx],
-                        edge_index=edge_index_list[idx],
-                        edge_attr=edge_attr_list[idx],
-                        parameters={"epoch": epoch, "beta": key},
-                        param_schema=sorted_schema
-                    )
-                    graphs[key] = {"graph": graph, "schema": sorted_schema}
-                visualise_growth(graphs, epoch)
-                calculate_graphs_metrics(graphs, epoch)
+            graphs = {}
+            for key in beta_edges.keys():
+                edge_index_list, edge_attr_list = beta_edges[key][0], beta_edges[key][1]
+                graph = create_graph(
+                    latent_points=latent_batch[idx],
+                    edge_index=edge_index_list[idx],
+                    edge_attr=edge_attr_list[idx],
+                    parameters={"epoch": epoch, "beta": key},
+                    param_schema=sorted_schema,
+                    is_visual=is_visual,
+                    visual_save_path=visual_save_path
+                )
+                graphs[key] = {"graph": graph, "schema": sorted_schema}
 
-        avg_loss = epoch_loss / len(dataloader)
-        train_losses.append(avg_loss)
-
-        print(f'Epoch [{epoch + 1}/{epochs}], Avg Loss: {avg_loss:.6f}')
-
-        # Update learning rate based on validation loss
-        scheduler.step(avg_loss)
+            calculate_growth(
+                graphs,
+                epoch,
+                is_visual=is_visual,
+                visual_save_path=visual_save_path,
+                is_save=is_save,
+                data_save_path=data_save_path,
+            )
+            calculate_graphs_metrics(graphs, epoch)
 
     # Save the trained model
     torch.save({
@@ -459,35 +483,76 @@ def generate_sample_data(num_samples=1024, batch_size=64):
         shuffle=True
     )
 
-
-
-def visualize_graph(latent_points, edge_index, edge_attr, parameters: dict, param_schema=None, visual_save_path="results") -> nx.Graph:
-    """
-    Visualisation Graph
-
-    :param latent_points:
-    :param edge_index: (2, num_edges)
-    :param epoch:
-    :param save_dir:
-    :param
-    """
-    os.makedirs(visual_save_path, exist_ok=True)
-
+def create_networkx_graph(latent_points, edge_index):
     G = nx.Graph()
     positions = {}
 
-    coords = []
+    # Добавляем узлы и их позиции
     for i in range(latent_points.shape[0]):
         x, y = latent_points[i][0].item(), latent_points[i][1].item()
         G.add_node(i)
         positions[i] = (x, y)
-        coords.append([x, y])
 
-    edges = edge_index.t().cpu().numpy()
-    for src, tgt in edges:
-        G.add_edge(src, tgt)
+    # Добавляем рёбра
+    if edge_index.numel() > 0:  # Проверяем, что есть рёбра
+        edges = edge_index.t().cpu().numpy()
+        for src, tgt in edges:
+            G.add_edge(src, tgt)
 
-    mst = nx.minimum_spanning_tree(G)
+    return G, positions
+
+def create_graph(
+        latent_points,
+        edge_index,
+        edge_attr,
+        parameters: dict,
+        param_schema=None,
+        is_visual: bool = False,
+        visual_save_path: str = "results/graphics",
+) -> nx.Graph:
+    G = nx.Graph()
+    positions = {}
+
+    for i in range(latent_points.shape[0]):
+        x, y = latent_points[i][0].item(), latent_points[i][1].item()
+        G.add_node(i)
+        positions[i] = (x, y)
+
+    if edge_index.numel() > 0:
+        edges = edge_index.t().cpu().numpy()
+        if edge_attr is not None:
+            weights = edge_attr.detach().cpu().numpy()
+            for (src, tgt), weight in zip(edges, weights):
+                G.add_edge(src, tgt, weight=weight)
+        else:
+            for src, tgt in edges:
+                G.add_edge(src, tgt)
+
+    if is_visual:
+        visualize_graph(
+            G,
+            positions,
+            latent_points,
+            edge_index,
+            edge_attr,
+            param_schema,
+            parameters,
+            visual_save_path
+        )
+    return G
+
+def visualize_graph(
+        G,
+        positions,
+        latent_points,
+        edge_index,
+        edge_attr,
+        parameters: dict,
+        param_schema=None,
+        visual_save_path: str = "results/graphics",
+):
+
+    os.makedirs(visual_save_path, exist_ok=True)
 
     node_colors = []
     for i in range(len(latent_points)):
@@ -497,12 +562,6 @@ def visualize_graph(latent_points, edge_index, edge_attr, parameters: dict, para
             group = "unknown"
         color = group_color_map.get(group, group_color_map["unknown"])
         node_colors.append(color)
-
-    weights = edge_attr.detach().cpu().numpy()
-    edge_labels = {}
-    for (src, tgt), weight in zip(edges, weights):
-        G.add_edge(src, tgt, weight=weight)
-        edge_labels[(src, tgt)] = float(weight)
 
     fig = plt.figure(figsize=(12, 8))
     gs = fig.add_gridspec(
@@ -529,6 +588,7 @@ def visualize_graph(latent_points, edge_index, edge_attr, parameters: dict, para
         edgecolors="black"
     )
 
+
     for i, (x, y) in positions.items():
         ax_graph.annotate(
             str(i),
@@ -543,6 +603,7 @@ def visualize_graph(latent_points, edge_index, edge_attr, parameters: dict, para
     nx.draw_networkx_edges(G, pos=positions, ax=ax_graph, edge_color="#2fe94e", width=1.2)
 
     # Draw MST
+    mst = nx.minimum_spanning_tree(G)
     nx.draw_networkx_edges(mst, pos=positions, ax=ax_graph, edge_color="#CA2171", width=1.6, style="dashed")
 
     # for src, tgt in edges:
@@ -592,10 +653,14 @@ def visualize_graph(latent_points, edge_index, edge_attr, parameters: dict, para
 
     edge_table_data = []
     edge_table_data.append(["From", "To", "Weight"])
-    for (src, tgt), weight in edge_labels.items():
-        src_name = param_schema[src].name if param_schema else f"node_{src}"
-        tgt_name = param_schema[tgt].name if param_schema else f"node_{tgt}"
-        edge_table_data.append([src_name, tgt_name, f"{weight:.3f}"])
+    if edge_index.numel() > 0:
+        edges = edge_index.t().cpu().numpy()
+        if edge_attr is not None:
+            weights = edge_attr.detach().cpu().numpy()
+            for (src, tgt), weight in zip(edges, weights):
+                src_name = param_schema[src].name if param_schema else f"node_{src}"
+                tgt_name = param_schema[tgt].name if param_schema else f"node_{tgt}"
+                edge_table_data.append([src_name, tgt_name, f"{weight:.3f}"])
 
     def calculate_column_widths(data):
         if not data:
@@ -648,43 +713,19 @@ def visualize_graph(latent_points, edge_index, edge_attr, parameters: dict, para
     filename = os.path.join(visual_save_path, f"graph-{parameters["beta"]}-epoch{parameters["epoch"] + 1:02d}.png")
     plt.savefig(filename, dpi=150, bbox_inches="tight")
     plt.close()
-    return G
 
-def visualise_growth(graphs_info: dict, epoch, visual_save_path="results", is_use_central=False):
-    """
-    graphs_info: dict[nx.Graph], каждый dict должен содержать:
-        - 'graph': networkx.Graph
-        - 'label': подпись на графике (например, "β=0.5, узел=7")
-        - optionally: 'color': цвет кривой
-    """
-
-    plt.figure(figsize=(6, 4))
-    ax = plt.gca()
-
+def calculate_growth(
+        graphs_info: dict,
+        epoch: int,
+        is_use_central: bool = False,
+        is_visual: bool = False,
+        visual_save_path: str = "results/graphics",
+        is_save: bool = False,
+        data_save_path: str = "results/data"
+):
     all_growth_records = []
 
-    def compute_growth_layers(graph: nx.Graph, start_node: int, max_depth: int = 5):
-        visited = set()
-        queue = deque([(start_node, 0)])
-        growth = defaultdict(set)
-        growth[0].add(start_node)
-
-        while queue:
-            node, depth = queue.popleft()
-            if node in visited:
-                continue
-            visited.add(node)
-            if depth > 0:
-                growth[depth].add(node)
-            if depth < max_depth:
-                for neighbor in graph.neighbors(node):
-                    if neighbor not in visited:
-                        queue.append((neighbor, depth + 1))
-
-        return sorted([(k, len(v)) for k, v in growth.items()])
-
-    for key in graphs_info.keys():
-        graph_info =  graphs_info[key]
+    for key, graph_info in graphs_info.items():
         G = graph_info["graph"]
         schema = graph_info["schema"]
         start_node = 0
@@ -699,12 +740,11 @@ def visualise_growth(graphs_info: dict, epoch, visual_save_path="results", is_us
                 if schema[idx].name == "agent_type":
                     start_node = idx
                     break
-        # print(f"Start node for compute graph has index {start_node}")
 
         growth_data = compute_growth_layers(G, start_node, max_depth=len(schema))
 
         if not growth_data:
-            print(f"[Epoch {epoch}] ⚠ growth_data is empty {key}. Skipping growth visualization.")
+            print(f"[Epoch {epoch}] ⚠ growth_data is empty for beta={key}. Skipping.")
             continue
 
         ks, ns = zip(*growth_data)
@@ -719,13 +759,52 @@ def visualise_growth(graphs_info: dict, epoch, visual_save_path="results", is_us
                 "CumulativeNodes": cumulative[i]
             })
 
-        ax.plot(ks, cumulative, marker='o', label=f"beta={key}")
+        if is_visual:
+            plot_path = os.path.join(visual_save_path, f"growth-epoch{epoch + 1:02d}.png")
+            plot_growth_curves(all_growth_records, plot_path)
 
-    data_filename = os.path.join(visual_save_path, f"growth_all_data-epoch{epoch + 1:02d}.csv")
-    with open(data_filename, mode='w', newline='') as f:
+        if is_save:
+            csv_path = os.path.join(data_save_path, f"growth_all_data-epoch{epoch + 1:02d}.csv")
+            save_growth_data_csv(all_growth_records, csv_path)
+
+def compute_growth_layers(graph: nx.Graph, start_node: int, max_depth: int = 5):
+    visited = set()
+    queue = deque([(start_node, 0)])
+    growth = defaultdict(set)
+    growth[0].add(start_node)
+
+    while queue:
+        node, depth = queue.popleft()
+        if node in visited:
+            continue
+        visited.add(node)
+        if depth > 0:
+            growth[depth].add(node)
+        if depth < max_depth:
+            for neighbor in graph.neighbors(node):
+                if neighbor not in visited:
+                    queue.append((neighbor, depth + 1))
+
+    return sorted([(k, len(v)) for k, v in growth.items()])
+
+def save_growth_data_csv(data: List[dict], filename: str):
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
+    with open(filename, mode='w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=["GraphKey", "Layer", "NewNodes", "CumulativeNodes"])
         writer.writeheader()
-        writer.writerows(all_growth_records)
+        writer.writerows(data)
+
+def plot_growth_curves(growth_records: List[dict], output_path: str):
+    plt.figure(figsize=(6, 4))
+    ax = plt.gca()
+    grouped = defaultdict(list)
+    for row in growth_records:
+        grouped[row["GraphKey"]].append(row)
+
+    for key, records in grouped.items():
+        ks = [r["Layer"] for r in records]
+        cumulative = [r["CumulativeNodes"] for r in records]
+        ax.plot(ks, cumulative, marker='o', label=f"beta={key}")
 
     ax.set_title("Growth", fontsize=9)
     ax.set_xlabel("Distance from start")
@@ -733,10 +812,7 @@ def visualise_growth(graphs_info: dict, epoch, visual_save_path="results", is_us
     ax.grid(True, linewidth=0.5, linestyle='--', alpha=0.6)
     ax.legend(fontsize=8)
     plt.tight_layout()
-
-    filename = os.path.join(visual_save_path, f"growth-epoch{epoch + 1:02d}.png")
-    plt.savefig(filename, dpi=150, bbox_inches="tight")
-
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close()
 
 def calculate_graph_metrics(G):
@@ -830,7 +906,11 @@ def main():
         factor=config.factor,
         patience=config.patience,
         param_schema=param_schema,
-        model_save_path=f"{config.model_save_path}/{model_filename}"
+        model_save_path=f"{config.model_save_path}/{model_filename}",
+        is_visual=config.visualise,
+        visual_save_path=config.visual_save_path,
+        is_save=config.save_metrics,
+        data_save_path=config.data_save_path,
     )
     
     print(f"Training completed! Model saved as {model_filename}")
