@@ -21,6 +21,9 @@ import networkx as nx
 import os
 from datetime import datetime
 
+from graphs_wrapper import (create_amadg_graph, create_delaunay_graph,
+                            create_beta_skeleton_graph, create_gabriel_graph)
+
 # Determine device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
@@ -146,120 +149,6 @@ class GraphAutoEncoder(nn.Module):
             nn.init.kaiming_uniform_(m.weight, mode='fan_in', nonlinearity='relu')
             nn.init.zeros_(m.bias)
 
-    def create_gabriel_graph(self, points):
-        """Create Gabriel graph with minimal preprocessing to preserve information"""
-        num_points = points.shape[0]
-        edge_indices = []
-        edge_attrs = []
-
-        # Convert to numpy for easier Gabriel graph checks
-        points_np = points.detach().cpu().numpy()
-
-        for i in range(num_points):
-            for j in range(i + 1, num_points):
-                midpoint = (points_np[i] + points_np[j]) / 2
-                radius_sq = np.sum((points_np[i] - midpoint) ** 2)
-
-                is_gabriel = True
-                for k in range(num_points):
-                    if k != i and k != j:
-                        dist_sq = np.sum((points_np[k] - midpoint) ** 2)
-                        if dist_sq < radius_sq:
-                            is_gabriel = False
-                            break
-
-                if is_gabriel:
-                    dist = torch.norm(points[i] - points[j])
-                    edge_indices.append([i, j])
-                    edge_indices.append([j, i])
-                    edge_attrs.append(dist)
-                    edge_attrs.append(dist)
-
-        # Ensure there's at least one edge
-        if not edge_indices:
-            distances = torch.cdist(points, points)
-            mask = torch.ones_like(distances, dtype=torch.bool)
-            mask.fill_diagonal_(False)
-            min_dist, min_indices = torch.min(distances + ~mask * 1e10, dim=1)
-            min_dist_idx = torch.argmin(min_dist)
-            min_pair_idx = min_indices[min_dist_idx]
-            dist = torch.norm(points[min_dist_idx] - points[min_pair_idx])
-
-            edge_indices.append([int(min_dist_idx), int(min_pair_idx)])
-            edge_indices.append([int(min_pair_idx), int(min_dist_idx)])
-            edge_attrs.append(dist)
-            edge_attrs.append(dist)
-
-        # Convert to tensors
-        if edge_indices:
-            edge_index = torch.tensor(edge_indices, dtype=torch.long, device=points.device).t()
-            edge_attr = torch.stack(edge_attrs)
-        else:
-            edge_index = torch.zeros((2, 0), dtype=torch.long, device=points.device)
-            edge_attr = torch.zeros((0, 1), dtype=torch.float, device=points.device)
-
-        return edge_index, edge_attr
-
-    def build_beta_skeleton(self, points, beta: float):
-        num_points = points.shape[0]
-        edge_indices = []
-        edge_attrs = []
-
-        points_np = points.detach().cpu().numpy()
-
-        for i in range(num_points):
-            for j in range(i + 1, num_points):
-                pi = points_np[i]
-                pj = points_np[j]
-
-                midpoint = (pi + pj) / 2
-                dij = np.linalg.norm(pi - pj)
-
-                is_edge = True
-                for k in range(num_points):
-                    if k == i or k == j:
-                        continue
-                    pk = points_np[k]
-
-                    if beta == 0:
-                        # Relative Neighborhood Graph (RNG)
-                        if max(np.linalg.norm(pi - pk), np.linalg.norm(pj - pk)) < dij:
-                            is_edge = False
-                            break
-
-                    elif beta == 1:
-                        # Gabriel Graph
-                        if np.linalg.norm(pk - midpoint) < dij / 2:
-                            is_edge = False
-                            break
-
-                    else:
-                        # Общий случай
-                        center1 = pi + (pj - pi) * beta / (2 * beta)
-                        center2 = pj + (pi - pj) * beta / (2 * beta)
-                        radius = dij / (2 * beta)
-
-                        if np.linalg.norm(pk - center1) < radius or np.linalg.norm(pk - center2) < radius:
-                            is_edge = False
-                            break
-
-                if is_edge:
-                    # Добавляем оба направления
-                    edge_indices.append([i, j])
-                    edge_indices.append([j, i])
-
-                    dist_tensor = torch.norm(points[i] - points[j])
-                    edge_attrs.append(dist_tensor)
-                    edge_attrs.append(dist_tensor)
-
-        if edge_indices:
-            edge_index = torch.tensor(edge_indices, dtype=torch.long, device=points.device).t()
-            edge_attr = torch.stack(edge_attrs).unsqueeze(1)  # shape: (N_edges, 1)
-        else:
-            edge_index = torch.zeros((2, 0), dtype=torch.long, device=points.device)
-            edge_attr = torch.zeros((0, 1), dtype=torch.float, device=points.device)
-
-        return edge_index, edge_attr
 
     def forward(self, batch):
 
@@ -282,6 +171,7 @@ class GraphAutoEncoder(nn.Module):
                 edge_index, edge_attr = self.build_beta_skeleton(latent, b)
                 beta_edges[b][0].append(edge_index)
                 beta_edges[b][1].append(edge_attr)
+            edge_index, edge_attr = create_beta_skeleton_graph(latent, beta=1.7)
 
             # Create PyTorch Geometric Data object
             graph = Data(x=latent[:, 2].reshape(-1, 1), edge_index=edge_index)
