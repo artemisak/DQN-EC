@@ -606,7 +606,7 @@ if __name__ == "__main__":
     
     # Generate test points
     print("Generating test points...")
-    points = framework.generate_points(100, data_type='spiral', dimension=2)
+    points = framework.generate_points(100, data_type='circles', dimension=2)
     
     # Compare algorithms
     print("\nComparing algorithms...")
