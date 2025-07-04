@@ -1,6 +1,5 @@
 import torch
-import numpy as np
-from typing import Tuple, Optional, Union
+from typing import Tuple, Optional
 from graphs import (
     GraphAlgorithm, 
     DelaunayGraphAlgorithm, 
