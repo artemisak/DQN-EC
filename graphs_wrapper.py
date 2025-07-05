@@ -4,7 +4,9 @@ from graphs import (
     GraphAlgorithm, 
     DelaunayGraphAlgorithm, 
     BetaSkeletonAlgorithm, 
-    AMADGAlgorithm
+    AMADGAlgorithm,
+    AnisotropicDelaunayAlgorithm,
+    DALGGAlgorithm
 )
 
 
@@ -83,7 +85,6 @@ class TorchBetaSkeletonGraph:
     """Torch-compatible Beta-skeleton graph constructor."""
     
     def __init__(self, beta: float = 1.0):
-        self.beta = beta
         self.wrapper = TorchGraphWrapper(BetaSkeletonAlgorithm(beta=beta))
     
     def create_graph(self, points: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -91,10 +92,34 @@ class TorchBetaSkeletonGraph:
         return self.wrapper.construct_graph(points)
 
 
+class TorchAnisotropicDelaunayGraph:
+    """Torch-compatible Anisotropic Delaunay graph constructor."""
+
+    def __init__(self, pca_neighbors: int = 8, length_weight: float = 1.0, alignment_weight: float = 1.0):
+        self.wrapper = TorchGraphWrapper(AnisotropicDelaunayAlgorithm(pca_neighbors=pca_neighbors,
+                                                                      length_weight=length_weight,
+                                                                      alignment_weight=alignment_weight))
+
+    def create_graph(self, points: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Create Anisotropic Delaunay graph from torch tensor points."""
+        return self.wrapper.construct_graph(points)
+
+
+class TorchDALGG:
+    """Torch-compatible DALGG graph constructor."""
+
+    def __init__(self, k_density: int = 3, alpha: float = 1.2, beta: float = 0.8):
+        self.wrapper = TorchGraphWrapper(DALGGAlgorithm(k_density=k_density, alpha=alpha, beta=beta))
+
+    def create_graph(self, points: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Create DALGG graph from torch tensor points."""
+        return self.wrapper.construct_graph(points)
+
+
 class TorchAMADGGraph:
     """Torch-compatible AMADG graph constructor."""
     
-    def __init__(self, k_neighbors: Optional[int] = None, tau1: float = 0.3,
+    def __init__(self, k_neighbors: int = 8, tau1: float = 0.3,
                  alpha: float = 0.75, lambda_range: float = 3.0):
         self.wrapper = TorchGraphWrapper(
             AMADGAlgorithm(k_neighbors=k_neighbors, tau1=tau1, 
@@ -142,33 +167,13 @@ def create_amadg_graph(points: torch.Tensor, **kwargs) -> Tuple[torch.Tensor, to
     return amadg_graph.create_graph(points)
 
 
-# Example usage showing compatibility
-if __name__ == "__main__":
-    # Create sample torch tensor points
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    points = torch.randn(50, 3, device=device)  # 50 points in 3D
-    
-    # Test different graph construction methods
-    print("Testing graph construction methods...")
-    
-    # Gabriel graph (beta=1.0)
-    edge_index, edge_attr = create_gabriel_graph(points)
-    print(f"Gabriel graph: {edge_index.shape[1]//2} edges")
-    
-    # Delaunay triangulation
-    edge_index, edge_attr = create_delaunay_graph(points)
-    print(f"Delaunay graph: {edge_index.shape[1]//2} edges")
-    
-    # Beta-skeleton with beta=1.5
-    edge_index, edge_attr = create_beta_skeleton_graph(points, beta=1.5)
-    print(f"Beta-skeleton (β=1.5): {edge_index.shape[1]//2} edges")
-    
-    # AMADG
-    edge_index, edge_attr = create_amadg_graph(points)
-    print(f"AMADG: {edge_index.shape[1]//2} edges")
-    
-    # Verify output format
-    print(f"\nOutput format check:")
-    print(f"edge_index shape: {edge_index.shape}, dtype: {edge_index.dtype}")
-    print(f"edge_attr shape: {edge_attr.shape}, dtype: {edge_attr.dtype}")
-    print(f"Device: {edge_index.device}")
+def create_anisotropic_graph(points: torch.Tensor, **kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Create Anisotropic graph from torch tensor points."""
+    anisotropic_graph = TorchAMADGGraph(**kwargs)
+    return anisotropic_graph.create_graph(points)
+
+
+def create_dal_graph(points: torch.Tensor, **kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Create DALGG graph from torch tensor points."""
+    dal_graph = TorchDALGG(**kwargs)
+    return dal_graph.create_graph(points)
