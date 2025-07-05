@@ -85,7 +85,7 @@ class DelaunayGraphAlgorithm(GraphAlgorithm):
 class BetaSkeletonAlgorithm(GraphAlgorithm):
     """Beta-skeleton graph algorithm."""
 
-    def __init__(self, beta: float = 1.0):
+    def __init__(self, beta: float = 1.7):
         self.beta = beta
 
     @property
