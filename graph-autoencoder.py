@@ -22,7 +22,8 @@ import os
 from datetime import datetime
 
 from graphs_wrapper import (create_amadg_graph, create_delaunay_graph,
-                            create_beta_skeleton_graph, create_gabriel_graph)
+                            create_beta_skeleton_graph, create_gabriel_graph,
+                            create_anisotropic_graph, create_dal_graph)
 
 # Determine device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -172,6 +173,8 @@ class GraphAutoEncoder(nn.Module):
                 beta_edges[b][0].append(edge_index)
                 beta_edges[b][1].append(edge_attr)
             edge_index, edge_attr = create_beta_skeleton_graph(latent, beta=1.7)
+            # Create a preset graph
+            edge_index, _ = create_gabriel_graph(latent[:, :2])
 
             # Create PyTorch Geometric Data object
             graph = Data(x=latent[:, 2].reshape(-1, 1), edge_index=edge_index)
@@ -266,6 +269,7 @@ def train_model(
                 gamma=gamma
             )
             loss = reconstruction_loss(true_distribution, predicted_logits, true_values, predicted_values, epoch, epochs) + 1e-6* l1_loss(edge_attr_list)
+            loss = reconstruction_loss(true_distribution, predicted_logits, true_values, predicted_values, epoch, epochs) + 1e-6 * l1_loss(edge_attr_list)
 
             # Backward and optimize
             optimizer.zero_grad()
