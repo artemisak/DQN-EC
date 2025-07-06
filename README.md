@@ -48,6 +48,7 @@ Input feature dimension for encoder       |
     - Node positions in 2D latent space 
     - Gabriel Graph edges 
     - Minimum Spanning Tree (MST)
+    - Node labels, colors, and semantic grouping 
     - Tabular node and edge summaries
 
 Example of visualisation:

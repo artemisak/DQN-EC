@@ -84,7 +84,7 @@ class TorchDelaunayGraph:
 class TorchBetaSkeletonGraph:
     """Torch-compatible Beta-skeleton graph constructor."""
     
-    def __init__(self, beta: float = 1.0):
+    def __init__(self, beta: float = 1.7):
         self.wrapper = TorchGraphWrapper(BetaSkeletonAlgorithm(beta=beta))
     
     def create_graph(self, points: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -95,7 +95,7 @@ class TorchBetaSkeletonGraph:
 class TorchAnisotropicDelaunayGraph:
     """Torch-compatible Anisotropic Delaunay graph constructor."""
 
-    def __init__(self, pca_neighbors: int = 8, length_weight: float = 1.0, alignment_weight: float = 1.0):
+    def __init__(self, pca_neighbors: int = 3, length_weight: float = 1.2, alignment_weight: float = 0.8):
         self.wrapper = TorchGraphWrapper(AnisotropicDelaunayAlgorithm(pca_neighbors=pca_neighbors,
                                                                       length_weight=length_weight,
                                                                       alignment_weight=alignment_weight))
@@ -119,7 +119,7 @@ class TorchDALGG:
 class TorchAMADGGraph:
     """Torch-compatible AMADG graph constructor."""
     
-    def __init__(self, k_neighbors: int = 8, tau1: float = 0.3,
+    def __init__(self, k_neighbors: int = 3, tau1: float = 0.3,
                  alpha: float = 0.75, lambda_range: float = 3.0):
         self.wrapper = TorchGraphWrapper(
             AMADGAlgorithm(k_neighbors=k_neighbors, tau1=tau1, 

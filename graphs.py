@@ -1,7 +1,7 @@
 import numpy as np
 import networkx as nx
 from scipy.spatial import Delaunay
-from scipy.spatial import KDTree, cKDTree
+from scipy.spatial import KDTree
 from sklearn.neighbors import NearestNeighbors
 from sklearn.decomposition import PCA
 import time
@@ -337,7 +337,7 @@ class AMADGAlgorithm(GraphAlgorithm):
 
 
 class AnisotropicDelaunayAlgorithm(GraphAlgorithm):
-    def __init__(self, pca_neighbors: int = 8, length_weight: float = 1.0, alignment_weight: float = 1.0):
+    def __init__(self, pca_neighbors: int = 3, length_weight: float = 1.2, alignment_weight: float = 0.8):
         self.k = pca_neighbors
         self.alpha = length_weight
         self.beta = alignment_weight
@@ -357,7 +357,7 @@ class AnisotropicDelaunayAlgorithm(GraphAlgorithm):
                 edge = tuple(sorted((a, b)))
                 edge_set.add(edge)
 
-        tree = cKDTree(points)
+        tree = KDTree(points)
         edge_scores = []
         edges = list(edge_set)
 
@@ -420,7 +420,7 @@ class DALGGAlgorithm(GraphAlgorithm):
     - Von Luxburg (2007). "A tutorial on spectral clustering"
     """
 
-    def __init__(self, k_density: int = 10, alpha: float = 1.5, beta: float = 0.7):
+    def __init__(self, k_density: int = 3, alpha: float = 1.2, beta: float = 0.8):
         """
         Initialize DALGG algorithm.
 

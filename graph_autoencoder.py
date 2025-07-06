@@ -174,7 +174,7 @@ class GraphAutoEncoder(nn.Module):
                 beta_edges[b][1].append(edge_attr)
             edge_index, edge_attr = create_beta_skeleton_graph(latent, beta=1.7)
             # Create a preset graph
-            edge_index, _ = create_gabriel_graph(latent[:, :2])
+            edge_index, edge_attr = create_anisotropic_graph(latent[:, :2])
 
             # Create PyTorch Geometric Data object
             graph = Data(x=latent[:, 2].reshape(-1, 1), edge_index=edge_index)
