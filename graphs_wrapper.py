@@ -6,7 +6,9 @@ from graphs import (
     BetaSkeletonAlgorithm, 
     AMADGAlgorithm,
     AnisotropicDelaunayAlgorithm,
-    DALGGAlgorithm
+    DALGGAlgorithm,
+    KNNGraphAlgorithm,
+    FullyConnectedGraphAlgorithm
 )
 
 
@@ -131,6 +133,31 @@ class TorchAMADGGraph:
         return self.wrapper.construct_graph(points)
 
 
+class TorchKNNGraph:
+    """Torch-compatible KNN graph constructor."""
+
+    def __init__(self, k_neighbors: int = 3, metric: str = 'euclidean', include_self: bool = False, mutual: bool = False):
+        self.wrapper = TorchGraphWrapper(KNNGraphAlgorithm(k_neighbors=k_neighbors,
+                                                           metric=metric,
+                                                           include_self=include_self,
+                                                           mutual=mutual))
+
+    def create_graph(self, points: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Create KNN graph from torch tensor points."""
+        return self.wrapper.construct_graph(points)
+
+
+class TorchFullyConnectedGraph:
+    """Torch-compatible fully connected graph constructor."""
+
+    def __init__(self, include_self: bool = False):
+        self.wrapper = TorchGraphWrapper(FullyConnectedGraphAlgorithm(include_self=include_self))
+
+    def create_graph(self, points: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Create fully connected graph from torch tensor points."""
+        return self.wrapper.construct_graph(points)
+
+
 # Drop-in replacement for create_gabriel_graph
 def create_gabriel_graph(points: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     """
@@ -177,3 +204,13 @@ def create_dal_graph(points: torch.Tensor, **kwargs) -> Tuple[torch.Tensor, torc
     """Create DALGG graph from torch tensor points."""
     dal_graph = TorchDALGG(**kwargs)
     return dal_graph.create_graph(points)
+
+def create_knn_graph(points: torch.Tensor, **kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Create KNN graph from torch tensor points."""
+    knn_graph = TorchKNNGraph(**kwargs)
+    return knn_graph.create_graph(points)
+
+def create_full_connected_graph(points: torch.Tensor, **kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Create Full connected graph from torch tensor points."""
+    full_connected_graph = TorchFullyConnectedGraph(**kwargs)
+    return full_connected_graph.create_graph(points)
