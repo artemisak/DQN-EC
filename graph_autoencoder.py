@@ -110,7 +110,7 @@ class GraphAutoEncoder(nn.Module):
             latent = self.encoder(obs)
 
             # Create a preset graph
-            edge_index, _ = create_gabriel_graph(latent[:, :2])
+            edge_index, edge_attr = create_anisotropic_graph(latent[:, :2])
 
             # Create PyTorch Geometric Data object
             graph = Data(x=latent[:, 2].reshape(-1, 1), edge_index=edge_index)
@@ -244,7 +244,6 @@ def draw_graph(latent_points, edge_index, edge_attr, title="Gabriel Graph", save
     
     # Save the plot
     filename = f'{title.lower().replace(" ", "_").replace(":", "_")}.png'
-    plt.tight_layout()
     plt.savefig(os.path.join(save_dir, filename), 
                 dpi=150, bbox_inches='tight')
     plt.close()  # Close the figure to free memory
@@ -574,7 +573,6 @@ def visualize_graph(latent_points, edge_index, edge_attr, epoch, save_dir="graph
     table_edges.auto_set_font_size(False)
     table_edges.set_fontsize(7)
 
-    plt.tight_layout()
     filename = os.path.join(save_dir, f"epoch{epoch + 1:02d}.png")
     plt.savefig(filename, dpi=150, bbox_inches="tight")
     plt.close()

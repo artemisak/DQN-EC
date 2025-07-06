@@ -12,7 +12,7 @@ This project includes an implementation of a **Graph AutoEncoder** for encoding 
 
 Train the model and generate visualizations:
 ```bash
-python graph-autoencoder.py
+python graph_autoencoder.py
 ```
 
 ### Outputs
