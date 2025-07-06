@@ -12,7 +12,9 @@ from graphs_wrapper import (
     create_delaunay_graph, 
     create_beta_skeleton_graph,
     create_gabriel_graph,
-    create_dal_graph
+    create_dal_graph,
+    create_knn_graph,
+    create_full_connected_graph
 )
 from graph_autoencoder import generate_sample_data
 
@@ -182,14 +184,16 @@ def run_comparison():
     
     # Define algorithms to test
     algorithms = {
-        'Delaunay': create_delaunay_graph,
+        'Fully Connected': create_full_connected_graph,
         'Beta Skeleton (β=1.7)': lambda points: create_beta_skeleton_graph(points, beta=1.7),
-        'Gabriel (β=1.0)': create_gabriel_graph,
+        'Delaunay': create_delaunay_graph,
+        'Beta Skeleton (β=1.0)': create_gabriel_graph,
+        'kNN': create_knn_graph,
         'DAL': create_dal_graph
     }
     
     # Parameters
-    num_runs = 100
+    num_runs = 3
     epochs = 30
     lr = 0.0025
     track_epochs = [1, 5, 10, 15, 20, 25, 30]
