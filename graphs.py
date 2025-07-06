@@ -593,3 +593,214 @@ class DALGGAlgorithm(GraphAlgorithm):
                 return False
 
         return True
+
+
+class KNNGraphAlgorithm(GraphAlgorithm):
+    """
+    k-Nearest Neighbors (kNN) graph algorithm.
+
+    This algorithm connects each point to its k nearest neighbors based on
+    Euclidean distance. The resulting graph can be either directed or undirected.
+
+    In the directed version, an edge from i to j exists if j is among the k
+    nearest neighbors of i. In the undirected version, an edge exists if either
+    i is a k-NN of j OR j is a k-NN of i (mutual kNN).
+
+    References:
+    - Cover, T. and Hart, P. (1967). "Nearest neighbor pattern classification"
+    - Bentley, J.L. (1975). "Multidimensional binary search trees used for
+      associative searching"
+    """
+
+    def __init__(self, k_neighbors: int = 3, metric: str = 'euclidean',
+                 include_self: bool = False, mutual: bool = True):
+        """
+        Initialize kNN graph algorithm.
+
+        Args:
+            k_neighbors: Number of nearest neighbors to connect
+            metric: Distance metric to use (Euclidean by default)
+            include_self: Whether to include self-loops
+            mutual: If True, creates undirected graph where edge exists if either
+                   node is in the other's k-NN. If False, directed graph.
+        """
+        self.k = k_neighbors
+        self.metric = metric
+        self.include_self = include_self
+        self.mutual = mutual
+
+    @property
+    def name(self) -> str:
+        mutual_str = "mutual" if self.mutual else "directed"
+        return f"kNN(k={self.k},{mutual_str})"
+
+    def construct(self, points: np.ndarray) -> GraphResult:
+        """
+        Construct kNN graph from points.
+
+        Args:
+            points: n × d array of point coordinates
+
+        Returns:
+            GraphResult containing the constructed graph
+        """
+        start_time = time.time()
+
+        n_points = len(points)
+
+        # Adjust k if needed
+        k_actual = min(self.k, n_points - 1) if not self.include_self else min(self.k, n_points)
+
+        # Compute k nearest neighbors
+        nbrs = NearestNeighbors(
+            n_neighbors=k_actual + (0 if self.include_self else 1),
+            algorithm='auto',
+            metric=self.metric
+        )
+        nbrs.fit(points)
+
+        distances, indices = nbrs.kneighbors(points)
+
+        # Build edge set and adjacency list
+        edges_set = set()
+        adjacency = defaultdict(set)
+
+        for i in range(n_points):
+            # Get neighbors for point i
+            neighbor_indices = indices[i]
+            neighbor_distances = distances[i]
+
+            # Skip self if not including self-loops
+            start_idx = 0 if self.include_self else 1
+
+            for idx in range(start_idx, len(neighbor_indices)):
+                j = neighbor_indices[idx]
+
+                if self.mutual:
+                    # Undirected graph: add edge as tuple (min, max)
+                    edge = tuple(sorted([i, j]))
+                    edges_set.add(edge)
+                    adjacency[i].add(j)
+                    adjacency[j].add(i)
+
+                else:
+                    # Directed graph: add edge as (i, j)
+                    edge = (i, j)
+                    edges_set.add(edge)
+                    adjacency[i].add(j)
+
+        # Convert edges to numpy array
+        edges = np.array(list(edges_set))
+
+        # Create NetworkX graph
+        if self.mutual:
+            G = nx.Graph()
+        else:
+            G = nx.DiGraph()
+
+        G.add_nodes_from(range(n_points))
+
+        G.add_edges_from(edges_set)
+
+        construction_time = time.time() - start_time
+
+        return GraphResult(
+            edges=edges,
+            adjacency=dict(adjacency),
+            nx_graph=G,
+            construction_time=construction_time,
+            algorithm_name=self.name
+        )
+
+
+class FullyConnectedGraphAlgorithm(GraphAlgorithm):
+    """
+    Fully Connected (Complete) graph algorithm.
+
+    This algorithm creates a complete graph where every node is connected
+    to every other node. For n nodes, this results in n(n-1)/2 edges.
+
+    Complete graphs are useful for:
+    - Testing graph algorithms on dense graphs
+    - Baseline comparisons
+    - Theoretical analysis
+    - Small-scale problems where all pairwise relationships matter
+
+    Warning: The number of edges grows quadratically with the number of nodes,
+    so this should only be used for relatively small point sets.
+    """
+
+    def __init__(self, include_self: bool = False):
+        """
+        Initialize Fully Connected graph algorithm.
+
+        Args:
+            include_self: Whether to include edges from nodes to themselves
+        """
+        self.include_self_loops = include_self
+
+    @property
+    def name(self) -> str:
+        suffix = " (with self-loops)" if self.include_self_loops else ""
+        return f"FullyConnected{suffix}"
+
+    def construct(self, points: np.ndarray) -> GraphResult:
+        """
+        Construct a fully connected graph from points.
+
+        Args:
+            points: n × d array of point coordinates
+
+        Returns:
+            GraphResult containing the constructed complete graph
+        """
+        start_time = time.time()
+
+        n_points = len(points)
+        edges_list = []
+        adjacency = defaultdict(set)
+
+        # Generate all possible edges
+        for i in range(n_points):
+            # Start from i+1 to avoid duplicate edges in undirected graph
+            # Start from i if self-loops are included
+            start_j = i if self.include_self_loops else i + 1
+
+            for j in range(start_j, n_points):
+                if i != j:  # Regular edge
+                    edges_list.append((i, j))
+                    adjacency[i].add(j)
+                    adjacency[j].add(i)
+                elif self.include_self_loops:  # Self-loop
+                    edges_list.append((i, i))
+                    adjacency[i].add(i)
+
+        # Convert to numpy array
+        edges = np.array(edges_list) if edges_list else np.array([]).reshape(0, 2)
+
+        # Create NetworkX graph
+        G = nx.Graph()
+        G.add_nodes_from(range(n_points))
+        G.add_edges_from(edges_list)
+
+        # Add node positions as attributes for visualization
+        pos_dict = {i: points[i] for i in range(n_points)}
+        nx.set_node_attributes(G, pos_dict, 'pos')
+
+        construction_time = time.time() - start_time
+
+        # Log some statistics
+        expected_edges = n_points * (n_points - 1) // 2
+        if self.include_self_loops:
+            expected_edges += n_points
+
+        assert len(edges) == expected_edges, \
+            f"Expected {expected_edges} edges but got {len(edges)}"
+
+        return GraphResult(
+            edges=edges,
+            adjacency=dict(adjacency),
+            nx_graph=G,
+            construction_time=construction_time,
+            algorithm_name=self.name
+        )
