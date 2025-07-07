@@ -78,7 +78,6 @@ torch-geometric==2.6.1
 tqdm==4.67.1
 trove-classifiers==2025.5.9.12
 typeguard==4.4.4
-typing_extensions==4.13.2
 tyro==0.9.25
 urllib3==2.4.0
 virtualenv==20.31.2
