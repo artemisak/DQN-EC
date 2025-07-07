@@ -21,13 +21,22 @@ import networkx as nx
 import os
 from datetime import datetime
 
-from graphs_wrapper import (create_amadg_graph, create_delaunay_graph,
+from graphs_wrapper import (create_delaunay_graph,
                             create_beta_skeleton_graph, create_gabriel_graph,
-                            create_anisotropic_graph, create_dal_graph)
+                            create_anisotropic_graph, create_dal_graph, create_knn_graph, create_full_connected_graph)
 
 # Determine device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
+
+algorithms = {
+    'Fully Connected': create_full_connected_graph,
+    'Beta Skeleton (β=1.7)': lambda points: create_beta_skeleton_graph(points, beta=1.7),
+    'Delaunay': create_delaunay_graph,
+    'Beta Skeleton (β=1.0)': create_gabriel_graph,
+    'kNN': create_knn_graph,
+    'DAL': create_dal_graph
+}
 
 @dataclass
 class Config:
@@ -157,24 +166,18 @@ class GraphAutoEncoder(nn.Module):
         reconstructed_values = []
         latent_list = []
 
-        beta_edges = {}
+        edges = {}
 
         for _, obs in enumerate(batch):
             # Encode each vector to latent vector
             latent = self.encoder(obs)
 
-            # Create a betta-skeleton graph (with beta = 1 we got the special case of Gabriel Graph)
-            edge_index, edge_attr = self.create_gabriel_graph(latent)
-            for beta in range(5,21, 1):
-                b = beta / 10
-                if b not in beta_edges:
-                    beta_edges[b] = [[],[]]
-                edge_index, edge_attr = self.build_beta_skeleton(latent, b)
-                beta_edges[b][0].append(edge_index)
-                beta_edges[b][1].append(edge_attr)
-            edge_index, edge_attr = create_beta_skeleton_graph(latent, beta=1.7)
-            # Create a preset graph
-            edge_index, edge_attr = create_anisotropic_graph(latent[:, :2])
+            for algo_name, graph_fn in algorithms.items():
+                edge_index, edge_attr = graph_fn(latent[:, :2])
+                if algo_name not in edges:
+                    edges[algo_name] = [[],[]]
+                edges[algo_name][0].append(edge_index)
+                edges[algo_name][1].append(edge_attr)
 
             # Create PyTorch Geometric Data object
             graph = Data(x=latent[:, 2].reshape(-1, 1), edge_index=edge_index)
@@ -196,7 +199,7 @@ class GraphAutoEncoder(nn.Module):
 
         return (batch[:, :, :4], batch[:, :, 4].reshape(64, 12, 1),
                 torch.stack(reconstructed_labels), torch.stack(reconstructed_values),
-                torch.stack(latent_list), beta_edges)
+                torch.stack(latent_list), edges)
 
 
 # Improved reconstruction loss with dimension-specific weighting
@@ -256,28 +259,26 @@ def train_model(
         for _, (batch,) in enumerate(dataloader):
 
             # Forward pass
-            true_distribution, true_values, predicted_logits, predicted_values, latent_batch, beta_edges = model(batch)
+            true_distribution, true_values, predicted_logits, predicted_values, latent_batch, edges = model(batch)
 
             # Calculate the combined loss function
-            loss = reconstruction_loss(
-                true_distribution=true_distribution,
-                predicted_logits=predicted_logits,
-                true_values=true_values,
-                predicted_values=predicted_values,
-                epoch=epoch,
-                total_epochs=epochs,
-                gamma=gamma
-            )
-            loss = reconstruction_loss(true_distribution, predicted_logits, true_values, predicted_values, epoch, epochs) + 1e-6* l1_loss(edge_attr_list)
-            loss = reconstruction_loss(true_distribution, predicted_logits, true_values, predicted_values, epoch, epochs) + 1e-6 * l1_loss(edge_attr_list)
+            # loss = reconstruction_loss(
+            #     true_distribution=true_distribution,
+            #     predicted_logits=predicted_logits,
+            #     true_values=true_values,
+            #     predicted_values=predicted_values,
+            #     epoch=epoch,
+            #     total_epochs=epochs,
+            #     gamma=gamma
+            # ) + 1e-6* l1_loss(edge_attr_list)
 
             # Backward and optimize
-            optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
-
-            epoch_loss += loss.item()
+            # optimizer.zero_grad()
+            # loss.backward()
+            # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            # optimizer.step()
+            #
+            # epoch_loss += loss.item()
 
 
         avg_loss = epoch_loss / len(dataloader)
@@ -315,8 +316,8 @@ def train_model(
             sorted_schema = [param_schema[i - 1] for i in variable_order]
 
             graphs = {}
-            for key in beta_edges.keys():
-                edge_index_list, edge_attr_list = beta_edges[key][0], beta_edges[key][1]
+            for key, info in edges.items():
+                edge_index_list, edge_attr_list = info[0], info[1]
                 graph = create_graph(
                     latent_points=latent_batch[idx],
                     edge_index=edge_index_list[idx],
@@ -511,7 +512,6 @@ def visualize_graph(
         edgecolors="black"
     )
 
-
     for i, (x, y) in positions.items():
         ax_graph.annotate(
             str(i),
@@ -543,9 +543,13 @@ def visualize_graph(
     #     circle = Circle((center_x, center_y), radius, edgecolor='#E94F31', facecolor='none', linestyle='--', linewidth=1.5)
     #     ax.add_patch(circle)
 
-    # coords = np.array(coords)
-    # vor = Voronoi(coords)
-    # voronoi_plot_2d(vor, ax=ax, show_vertices=False, line_colors='orange', line_width=1.5, line_alpha=0.6, point_size=0)
+    coords = []
+    for i in range(latent_points.shape[0]):
+        x, y = latent_points[i][0].item(), latent_points[i][1].item()
+        coords.append([x, y])
+    coords = np.array(coords)
+    vor = Voronoi(coords)
+    voronoi_plot_2d(vor, ax=ax_graph, show_vertices=False, line_colors='orange', line_width=1.5, line_alpha=0.6, point_size=0)
 
     legend_elements = [
         mpatches.Patch(color=color, label=group)
@@ -661,7 +665,7 @@ def calculate_growth(
         growth_data = compute_growth_layers(G, start_node, max_depth=len(schema))
 
         if not growth_data:
-            print(f"[Epoch {epoch}] ⚠ growth_data is empty for beta={key}. Skipping.")
+            print(f"[Epoch {epoch}] ⚠ growth_data is empty for {key}. Skipping.")
             continue
 
         ks, ns = zip(*growth_data)
@@ -721,7 +725,7 @@ def plot_growth_curves(growth_records: List[dict], output_path: str):
     for key, records in grouped.items():
         ks = [r["Layer"] for r in records]
         cumulative = [r["CumulativeNodes"] for r in records]
-        ax.plot(ks, cumulative, marker='o', label=f"beta={key}")
+        ax.plot(ks, cumulative, marker='o', label=f"{key}")
 
     ax.set_title("Growth", fontsize=9)
     ax.set_xlabel("Distance from start")
