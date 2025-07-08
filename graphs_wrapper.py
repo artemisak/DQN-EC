@@ -108,9 +108,21 @@ class TorchAnisotropicDelaunayGraph:
 
 
 class TorchDALGG:
-    """Torch-compatible DALGG graph constructor."""
+    """Torch-compatible DALGG graph constructor.
 
-    def __init__(self, k_density: int = 3, alpha: float = 1.2, beta: float = 0.8):
+    Configuration 1: More neighbors for better density estimation
+    'DAL-Dense': lambda points: create_dal_graph(points, k_density=5, alpha=1.5, beta=0.9),
+
+    Configuration 2: More aggressive density adaptation
+    'DAL-Adaptive': lambda points: create_dal_graph(points, k_density=4, alpha=2.0, beta=0.85),
+
+    Configuration 3: Less restrictive Gabriel criterion
+    'DAL-Relaxed': lambda points: create_dal_graph(points, k_density=5, alpha=1.3, beta=0.95),
+
+    Configuration 4: Balanced approach
+    'DAL-Balanced': lambda points: create_dal_graph(points, k_density=6, alpha=1.8, beta=0.88),
+    """
+    def __init__(self, k_density: int = 3, alpha: float = 0.8, beta: float = 0.8):
         self.wrapper = TorchGraphWrapper(DALGGAlgorithm(k_density=k_density, alpha=alpha, beta=beta))
 
     def create_graph(self, points: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -182,7 +194,7 @@ def create_delaunay_graph(points: torch.Tensor) -> Tuple[torch.Tensor, torch.Ten
     return delaunay_graph.create_graph(points)
 
 
-def create_beta_skeleton_graph(points: torch.Tensor, beta: float = 1.5) -> Tuple[torch.Tensor, torch.Tensor]:
+def create_beta_skeleton_graph(points: torch.Tensor, beta: float = 1.7) -> Tuple[torch.Tensor, torch.Tensor]:
     """Create Beta-skeleton graph from torch tensor points."""
     beta_graph = TorchBetaSkeletonGraph(beta=beta)
     return beta_graph.create_graph(points)
