@@ -7,7 +7,7 @@ import os
 from scipy import stats
 
 
-def load_and_process_results(json_file):
+def load_and_process_results(json_file, filter=False):
     """Load results from JSON file and process into aggregated DataFrame"""
     with open(json_file, 'r') as f:
         data = json.load(f)
@@ -44,25 +44,26 @@ def load_and_process_results(json_file):
                 return filtered
 
             # Apply outlier filtering
-            first_terms_filtered = filter_outliers(first_terms)
-            second_terms_filtered = filter_outliers(second_terms)
-            graph_losses_filtered = filter_outliers(graph_losses)
-            total_losses_filtered = filter_outliers(total_losses)
+            if filter:
+                first_terms = filter_outliers(first_terms)
+                second_terms = filter_outliers(second_terms)
+                graph_losses = filter_outliers(graph_losses)
+                total_losses = filter_outliers(total_losses)
 
             # Calculate statistics
             processed_data.append({
                 'Algorithm': algorithm,
                 'Epoch': epoch,
-                'First Term Mean': np.mean(first_terms_filtered),
-                'First Term Std': np.std(first_terms_filtered),
-                'Second Term Mean': np.mean(second_terms_filtered),
-                'Second Term Std': np.std(second_terms_filtered),
-                'Graph Loss Mean': np.mean(graph_losses_filtered),
-                'Graph Loss Std': np.std(graph_losses_filtered),
-                'Total Loss Mean': np.mean(total_losses_filtered),
-                'Total Loss Std': np.std(total_losses_filtered),
+                'First Term Mean': np.mean(first_terms),
+                'First Term Std': np.std(first_terms),
+                'Second Term Mean': np.mean(second_terms),
+                'Second Term Std': np.std(second_terms),
+                'Graph Loss Mean': np.mean(graph_losses),
+                'Graph Loss Std': np.std(graph_losses),
+                'Total Loss Mean': np.mean(total_losses),
+                'Total Loss Std': np.std(total_losses),
                 'Num Runs': len(runs_data),
-                'Num Runs After Filtering': len(total_losses_filtered)
+                'Num Runs After Filtering': len(total_losses)
             })
 
     return pd.DataFrame(processed_data), parameters

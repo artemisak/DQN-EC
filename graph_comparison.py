@@ -25,7 +25,7 @@ print(f"Using device: {device}")
 class GraphAutoEncoderComparison(nn.Module):
     """Modified GraphAutoEncoder that accepts graph creation function as parameter"""
 
-    def __init__(self, input_dim=5, output_dim=3, hidden_dim=64, graph_fn=None):
+    def __init__(self, input_dim=5, output_dim=3, hidden_dim=128, graph_fn=None):
         super(GraphAutoEncoderComparison, self).__init__()
 
         self.graph_fn = graph_fn if graph_fn is not None else create_gabriel_graph
@@ -42,8 +42,8 @@ class GraphAutoEncoderComparison(nn.Module):
         self.encoder.apply(self.kaiming_init)
 
         # Shared GAT layers
-        self.gcn1 = GATv2Conv(in_channels=1, out_channels=hidden_dim)
-        self.gcn2 = GATv2Conv(in_channels=hidden_dim, out_channels=hidden_dim)
+        self.gcn1 = GATv2Conv(in_channels=1, out_channels=hidden_dim, edge_dim=1)
+        self.gcn2 = GATv2Conv(in_channels=hidden_dim, out_channels=hidden_dim, edge_dim=1)
 
         # Label prediction
         self.gcn3 = GATv2Conv(in_channels=hidden_dim, out_channels=hidden_dim)
@@ -80,10 +80,10 @@ class GraphAutoEncoderComparison(nn.Module):
             edge_index, edge_attr = self.graph_fn(latent[:, :2])
 
             # Create PyTorch Geometric Data object
-            graph = Data(x=latent[:, 2].reshape(-1, 1), edge_index=edge_index)
+            graph = Data(x=latent[:, 2].reshape(-1, 1), edge_index=edge_index, edge_attr=edge_attr)
 
-            x1 = F.relu(self.gcn1(graph.x, graph.edge_index))
-            x2 = F.relu(self.gcn2(x1, graph.edge_index))
+            x1 = F.relu(self.gcn1(graph.x, graph.edge_index, edge_attr=graph.edge_attr))
+            x2 = F.relu(self.gcn2(x1, graph.edge_index, edge_attr=graph.edge_attr))
 
             # Predict the label
             x3 = F.relu(self.gcn3(x2, graph.edge_index) + self.alpha * self.skip_connection(latent))
@@ -191,16 +191,16 @@ def run_comparison():
 
     # Define algorithms to test
     algorithms = {
-        'Fully Connected': create_full_connected_graph,
+        'DAL': create_dal_graph,
         'Beta Skeleton (β=1.7)': lambda points: create_beta_skeleton_graph(points, beta=1.7),
-        'Delaunay': create_delaunay_graph,
         'Beta Skeleton (β=1.0)': create_gabriel_graph,
+        'Fully Connected': create_full_connected_graph,
+        'Delaunay': create_delaunay_graph,
         'kNN': create_knn_graph,
-        'DAL': create_dal_graph
     }
 
     # Parameters
-    num_runs = 30
+    num_runs = 3
     epochs = 30
     lr = 0.0025
     track_epochs = [1, 5, 10, 15, 20, 25, 30]

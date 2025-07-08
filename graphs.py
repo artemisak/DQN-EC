@@ -414,20 +414,28 @@ class DALGGAlgorithm(GraphAlgorithm):
     3. Pruning edges using a modified Gabriel criterion
 
     References:
-    - Gabriel, K.R. and Sokal, R.R. (1969). "A new statistical approach to
-      geographic variation analysis"
-    - Ester et al. (1996). "A density-based algorithm for discovering clusters"
-    - Von Luxburg (2007). "A tutorial on spectral clustering"
+        - Gabriel, K.R. and Sokal, R.R. (1969). "A new statistical approach to geographic variation analysis"
+        - Ester et al. (1996). "A density-based algorithm for discovering clusters"
+        - Von Luxburg (2007). "A tutorial on spectral clustering"
     """
-
-    def __init__(self, k_density: int = 3, alpha: float = 1.2, beta: float = 0.8):
+    def __init__(self, k_density: int = 6, alpha: float = 1.8, beta: float = 0.88):
         """
         Initialize DALGG algorithm.
 
         Args:
-            k_density: Number of neighbors for density estimation
-            alpha: Density scaling factor for adaptive neighborhood
-            beta: Geometric pruning threshold (0 < beta <= 1)
+            1. k_density: Number of neighbors for density estimation
+                - Higher k_density → More stable density estimates
+                - Lower k_density → More sensitive to local variations
+
+            2. alpha: Density scaling factor for adaptive neighborhood
+                - alpha = 0 → No adaptation (uniform k for all nodes)
+                - alpha = 1 → Linear scaling with density
+                - alpha > 1 → Exponential scaling (more extreme adaptation)
+
+            3. beta: Geometric pruning threshold (0 < beta <= 1)
+                - beta < 1 → Stricter pruning (fewer edges)
+                - beta = 1 → Standard Gabriel graph
+                - beta > 1 → Relaxed pruning (more edges)
         """
         self.k_density = k_density
         self.alpha = alpha
@@ -593,6 +601,237 @@ class DALGGAlgorithm(GraphAlgorithm):
                 return False
 
         return True
+
+
+class NormalizedDALGGAlgorithm(GraphAlgorithm):
+    """
+    Improved Density-Adaptive Local Geometric Graph algorithm.
+
+    Changes from original:
+    1. Better density estimation using normalized densities
+    2. More sophisticated adaptive neighborhood calculation
+    3. Improved Gabriel criterion with distance weighting
+    4. Added edge weight calculation for better graph quality
+    """
+
+    def __init__(self, k_density: int = 6, alpha: float = 0.5, beta: float = 1.0,
+                 min_neighbors: int = 3, max_neighbor_ratio: float = 3.0):
+        """
+        Initialize Improved DALGG algorithm.
+
+        Args:
+            k_density: Number of neighbors for density estimation (increased default)
+            alpha: Density scaling factor for adaptive neighborhood (increased for more adaptation)
+            beta: Geometric pruning threshold (0 < beta <= 1) (increased for less pruning)
+            min_neighbors: Minimum number of neighbors to maintain connectivity
+            max_neighbor_ratio: Maximum ratio of adaptive neighbors to k_density
+        """
+        self.k_density = k_density
+        self.alpha = alpha
+        self.beta = beta
+        self.min_neighbors = min_neighbors
+        self.max_neighbor_ratio = max_neighbor_ratio
+        self.epsilon = 1e-10
+
+    @property
+    def name(self) -> str:
+        return f"ImprovedDALGG(k={self.k_density},α={self.alpha},β={self.beta})"
+
+    def construct(self, points: np.ndarray) -> GraphResult:
+        start_time = time.time()
+
+        n_points = len(points)
+
+        # Build KD-tree for efficient nearest neighbor queries
+        kdtree = KDTree(points)
+
+        # Phase 1: Improved Local Density Estimation
+        densities = self._estimate_local_densities_improved(points, kdtree)
+
+        # Phase 2: Adaptive Neighborhood Construction
+        edges_set = set()
+        adjacency = defaultdict(set)
+        edge_weights = {}
+
+        # Track degree for each node to ensure minimum connectivity
+        degrees = np.zeros(n_points)
+
+        for i in range(n_points):
+            # Get adaptive neighbors for point i
+            neighbors = self._get_adaptive_neighbors_improved(i, points, kdtree, densities)
+
+            # Sort neighbors by distance for prioritization
+            neighbor_dists = [(j, np.linalg.norm(points[i] - points[j])) for j in neighbors]
+            neighbor_dists.sort(key=lambda x: x[1])
+
+            # Phase 3: Apply improved Gabriel criterion
+            added_count = 0
+            for j, dist in neighbor_dists:
+                if i < j:  # Avoid duplicate edges
+                    if self._should_connect_gabriel_improved(i, j, points, kdtree, densities):
+                        edge = (i, j)
+                        edges_set.add(edge)
+                        adjacency[i].add(j)
+                        adjacency[j].add(i)
+
+                        # Calculate edge weight based on density and distance
+                        weight = self._calculate_edge_weight(i, j, points, densities)
+                        edge_weights[edge] = weight
+
+                        degrees[i] += 1
+                        degrees[j] += 1
+                        added_count += 1
+
+                        # Early stopping if we have enough connections
+                        if added_count >= 2 * self.k_density:
+                            break
+
+        # Phase 4: Ensure minimum connectivity
+        for i in range(n_points):
+            if degrees[i] < self.min_neighbors:
+                # Find closest neighbors not yet connected
+                dists, indices = kdtree.query(points[i], k=min(n_points, 2 * self.k_density))
+
+                for idx in range(1, len(indices)):  # Skip self
+                    j = indices[idx]
+                    if j not in adjacency[i] and degrees[i] < self.min_neighbors:
+                        edge = tuple(sorted([i, j]))
+                        if edge not in edges_set:
+                            edges_set.add(edge)
+                            adjacency[i].add(j)
+                            adjacency[j].add(i)
+
+                            weight = self._calculate_edge_weight(i, j, points, densities)
+                            edge_weights[edge] = weight
+
+                            degrees[i] += 1
+                            degrees[j] += 1
+
+        # Convert to numpy array
+        edges = np.array(list(edges_set)) if edges_set else np.array([]).reshape(0, 2)
+
+        # Create NetworkX graph
+        G = nx.Graph()
+        if len(edges) > 0:
+            G.add_edges_from(edges)
+            nx.set_edge_attributes(G, edge_weights, 'weight')
+
+        construction_time = time.time() - start_time
+
+        return GraphResult(
+            edges=edges,
+            adjacency=dict(adjacency),
+            nx_graph=G,
+            construction_time=construction_time,
+            algorithm_name=self.name
+        )
+
+    def _estimate_local_densities_improved(self, points: np.ndarray, kdtree: KDTree) -> np.ndarray:
+        """
+        Improved density estimation with normalization and outlier handling.
+        """
+        n_points = len(points)
+        densities = np.zeros(n_points)
+
+        # Use adaptive k based on dataset size
+        k_adaptive = min(self.k_density + int(np.log2(n_points)), n_points - 1)
+
+        for i in range(n_points):
+            # Query k+1 neighbors (including the point itself)
+            distances, _ = kdtree.query(points[i], k=min(k_adaptive + 1, n_points))
+
+            if len(distances) > 1:
+                # Use harmonic mean for more robust density estimation
+                # This is less sensitive to outliers than arithmetic mean
+                avg_distance = len(distances[1:]) / np.sum(1.0 / (distances[1:] + self.epsilon))
+                densities[i] = 1.0 / (avg_distance + self.epsilon)
+            else:
+                densities[i] = 1.0 / self.epsilon
+
+        # Normalize densities using log transform to handle outliers
+        densities = np.log1p(densities)
+        densities = (densities - np.min(densities)) / (np.max(densities) - np.min(densities) + self.epsilon)
+
+        return densities
+
+    def _get_adaptive_neighbors_improved(self,
+                                         point_idx: int,
+                                         points: np.ndarray,
+                                         kdtree: KDTree,
+                                         densities: np.ndarray) -> List[int]:
+        """
+        Improved adaptive neighborhood with better bounds and density consideration.
+        """
+        # Use percentile-based density comparison for robustness
+        density_percentile = np.percentile(densities, 50)
+        density_ratio = (densities[point_idx] + self.epsilon) / (density_percentile + self.epsilon)
+
+        # Adaptive k with smoother scaling
+        k_adaptive = int(self.k_density * (density_ratio ** self.alpha))
+
+        # Improved bounds
+        k_adaptive = max(k_adaptive, self.min_neighbors)
+        k_adaptive = min(k_adaptive, int(self.k_density * self.max_neighbor_ratio))
+        k_adaptive = min(k_adaptive, len(points) - 1)
+
+        # Query neighbors
+        _, neighbors = kdtree.query(points[point_idx], k=k_adaptive + 1)
+
+        return neighbors[1:].tolist()
+
+    def _should_connect_gabriel_improved(self,
+                                         i: int,
+                                         j: int,
+                                         points: np.ndarray,
+                                         kdtree: KDTree,
+                                         densities: np.ndarray) -> bool:
+        """
+        Improved Gabriel criterion with density-aware modifications.
+        """
+        p_i, p_j = points[i], points[j]
+        d_ij = np.linalg.norm(p_i - p_j)
+
+        # Density-adjusted beta: be more permissive in dense regions
+        avg_density = (densities[i] + densities[j]) / 2
+        adjusted_beta = self.beta + (1 - self.beta) * (1 - avg_density) * 0.5
+
+        # Search radius
+        search_radius = adjusted_beta * d_ij
+
+        # Check midpoint region more efficiently
+        midpoint = (p_i + p_j) / 2
+        candidates = kdtree.query_ball_point(midpoint, search_radius)
+
+        for k in candidates:
+            if k == i or k == j:
+                continue
+
+            p_k = points[k]
+            d_ik = np.linalg.norm(p_i - p_k)
+            d_jk = np.linalg.norm(p_j - p_k)
+
+            # Modified Gabriel condition with density weighting
+            # Points in denser regions are less likely to block edges
+            density_factor = 1.0 - 0.3 * densities[k]  # Higher density points block less
+
+            if d_ik < adjusted_beta * d_ij * density_factor and \
+                    d_jk < adjusted_beta * d_ij * density_factor:
+                return False
+
+        return True
+
+    def _calculate_edge_weight(self, i: int, j: int, points: np.ndarray,
+                               densities: np.ndarray) -> float:
+        """
+        Calculate edge weight based on distance and density.
+        """
+        dist = np.linalg.norm(points[i] - points[j])
+        avg_density = (densities[i] + densities[j]) / 2
+
+        # Weight favors short edges in dense regions
+        weight = dist / (1 + avg_density)
+
+        return weight
 
 
 class KNNGraphAlgorithm(GraphAlgorithm):
