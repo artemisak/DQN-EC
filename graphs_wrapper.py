@@ -122,7 +122,7 @@ class TorchDALGG:
     Configuration 4: Balanced approach
     'DAL-Balanced': lambda points: create_dal_graph(points, k_density=6, alpha=1.8, beta=0.88),
     """
-    def __init__(self, k_density: int = 3, alpha: float = 0.8, beta: float = 0.8):
+    def __init__(self, k_density: int = 6, alpha: float = 0.8, beta: float = 1.7):
         self.wrapper = TorchGraphWrapper(DALGGAlgorithm(k_density=k_density, alpha=alpha, beta=beta))
 
     def create_graph(self, points: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:

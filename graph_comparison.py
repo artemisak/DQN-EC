@@ -200,7 +200,7 @@ def run_comparison():
     }
 
     # Parameters
-    num_runs = 3
+    num_runs = 100
     epochs = 30
     lr = 0.0025
     track_epochs = [1, 5, 10, 15, 20, 25, 30]
@@ -232,7 +232,7 @@ def run_comparison():
             model = GraphAutoEncoderComparison(
                 input_dim=5,
                 output_dim=3,
-                hidden_dim=64,
+                hidden_dim=128,
                 graph_fn=graph_fn
             ).to(device)
 
