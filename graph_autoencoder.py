@@ -29,15 +29,6 @@ from graphs_wrapper import (create_delaunay_graph,
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
-algorithms = {
-    'Fully Connected': create_full_connected_graph,
-    'Beta Skeleton (β=1.7)': lambda points: create_beta_skeleton_graph(points, beta=1.7),
-    'Delaunay': create_delaunay_graph,
-    'Beta Skeleton (β=1.0)': create_gabriel_graph,
-    'kNN': create_knn_graph,
-    'DAL': create_dal_graph
-}
-
 @dataclass
 class Config:
     # Model architecture parameters
@@ -48,7 +39,7 @@ class Config:
     # Training hyperparameters
     epochs: int = 30                        # Total number of training epochs
     lr: float = 0.0025                      # Learning rate for optimizer
-    model_save_path: str = "model"          # Path where trained model will be saved
+    model_save_path: str = "results/models"          # Path where trained model will be saved
 
     # Data generation
     num_samples: int = 1024                 # Number of synthetic samples to generate from the environment
@@ -64,7 +55,7 @@ class Config:
     gamma: float = 0.1
 
     # Metrics Parameters
-    is_growth_from_central: bool = False  # Enable calculate growth from central user node
+    is_growth_from_central: bool = False    # Enable calculate growth from central user node
 
     # Parameters for configure results output
     visualise: bool = False                          # Enable create visualisation of epochs
@@ -119,10 +110,12 @@ class GraphAutoEncoder(nn.Module):
     def __init__(self,
         input_dim=5,
         output_dim=3,
-        hidden_dim=64
+        hidden_dim=64,
+        graph_fn = None
         ):
         super(GraphAutoEncoder, self).__init__()
 
+        self.graph_fn = graph_fn if graph_fn is not None else create_gabriel_graph
         # Encoder MLP
         self.encoder = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
@@ -165,19 +158,15 @@ class GraphAutoEncoder(nn.Module):
         reconstructed_labels = []
         reconstructed_values = []
         latent_list = []
-
-        edges = {}
+        edge_index_list = []
+        edge_attr_list = []
 
         for _, obs in enumerate(batch):
             # Encode each vector to latent vector
             latent = self.encoder(obs)
 
-            for algo_name, graph_fn in algorithms.items():
-                edge_index, edge_attr = graph_fn(latent[:, :2])
-                if algo_name not in edges:
-                    edges[algo_name] = [[],[]]
-                edges[algo_name][0].append(edge_index)
-                edges[algo_name][1].append(edge_attr)
+            # Create a graph using the specified function
+            edge_index, edge_attr = self.graph_fn(latent[:, :2])
 
             # Create PyTorch Geometric Data object
             graph = Data(x=latent[:, 2].reshape(-1, 1), edge_index=edge_index)
@@ -196,10 +185,11 @@ class GraphAutoEncoder(nn.Module):
             reconstructed_labels.append(logits)
             reconstructed_values.append(values)
             latent_list.append(latent)
-
+            edge_index_list.append(edge_index)
+            edge_attr_list.append(edge_attr)
         return (batch[:, :, :4], batch[:, :, 4].reshape(64, 12, 1),
                 torch.stack(reconstructed_labels), torch.stack(reconstructed_values),
-                torch.stack(latent_list), edges)
+                torch.stack(latent_list), edge_index_list, edge_attr_list)
 
 
 # Improved reconstruction loss with dimension-specific weighting
@@ -233,6 +223,7 @@ def l1_loss(edge_attr_list):
 def train_model(
         model,
         dataloader,
+        name: str,
         epochs: int,
         lr: float,
         factor: float,
@@ -240,12 +231,14 @@ def train_model(
         gamma: float,
         param_schema: list[NodeDescriptor],
         is_growth_from_central: bool = False,
-        model_save_path: str ="trained_model.pth",
+        model_save_path: str ="results/models",
+        model_filename: str = "model.pth",
         is_visual: bool = False,
         visual_save_path: str = "results/graphics",
         is_save: bool = False,
         data_save_path: str = "results/metrics"
 ):
+    os.makedirs(model_save_path, exist_ok=True)
     """Train with only reconstruction loss for better convergence"""
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -259,26 +252,26 @@ def train_model(
         for _, (batch,) in enumerate(dataloader):
 
             # Forward pass
-            true_distribution, true_values, predicted_logits, predicted_values, latent_batch, edges = model(batch)
+            true_distribution, true_values, predicted_logits, predicted_values, latent_batch, edge_index_list, edge_attr_list = model(batch)
 
             # Calculate the combined loss function
-            # loss = reconstruction_loss(
-            #     true_distribution=true_distribution,
-            #     predicted_logits=predicted_logits,
-            #     true_values=true_values,
-            #     predicted_values=predicted_values,
-            #     epoch=epoch,
-            #     total_epochs=epochs,
-            #     gamma=gamma
-            # ) + 1e-6* l1_loss(edge_attr_list)
+            loss = reconstruction_loss(
+                true_distribution=true_distribution,
+                predicted_logits=predicted_logits,
+                true_values=true_values,
+                predicted_values=predicted_values,
+                epoch=epoch,
+                total_epochs=epochs,
+                gamma=gamma
+            ) + 1e-6* l1_loss(edge_attr_list)
 
             # Backward and optimize
-            # optimizer.zero_grad()
-            # loss.backward()
-            # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            # optimizer.step()
-            #
-            # epoch_loss += loss.item()
+            optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+
+            epoch_loss += loss.item()
 
 
         avg_loss = epoch_loss / len(dataloader)
@@ -316,29 +309,27 @@ def train_model(
             sorted_schema = [param_schema[i - 1] for i in variable_order]
 
             graphs = {}
-            for key, info in edges.items():
-                edge_index_list, edge_attr_list = info[0], info[1]
-                graph = create_graph(
-                    latent_points=latent_batch[idx],
-                    edge_index=edge_index_list[idx],
-                    edge_attr=edge_attr_list[idx],
-                    parameters={"epoch": epoch+1, "beta": key},
-                    param_schema=sorted_schema,
-                    is_visual=is_visual,
-                    visual_save_path=visual_save_path
-                )
-                graphs[key] = {"graph": graph, "schema": sorted_schema}
-
-            calculate_growth(
-                graphs,
-                epoch+1,
-                is_growth_from_central=is_growth_from_central,
+            graph = create_graph(
+                latent_points=latent_batch[idx],
+                edge_index=edge_index_list[idx],
+                edge_attr=edge_attr_list[idx],
+                parameters={"epoch": epoch+1, "name": name},
+                param_schema=sorted_schema,
                 is_visual=is_visual,
-                visual_save_path=visual_save_path,
-                is_save=is_save,
-                data_save_path=data_save_path,
+                visual_save_path=visual_save_path
             )
-            calculate_graphs_metrics(graphs, epoch)
+            graphs[key] = {"graph": graph, "schema": sorted_schema}
+
+            # calculate_growth(
+            #     graphs,
+            #     epoch+1,
+            #     is_growth_from_central=is_growth_from_central,
+            #     is_visual=is_visual,
+            #     visual_save_path=visual_save_path,
+            #     is_save=is_save,
+            #     data_save_path=data_save_path,
+            # )
+            # calculate_graphs_metrics(graphs, epoch)
 
     # Save the trained model
     torch.save({
@@ -352,7 +343,7 @@ def train_model(
             'output_dim': 3,
             'hidden_dim': 64
         }
-    }, model_save_path)
+    }, f"{model_save_path}/{model_filename}")
     
     print(f"Model saved to {model_save_path}")
 
@@ -360,7 +351,6 @@ def train_model(
 # Generate sample data
 def generate_sample_data(num_samples=1024, batch_size=64):
     """Sample the data from the environment with a random policy"""
-    
     env = simple_speaker_listener_v4.parallel_env(max_cycles=num_samples)
     env.reset()
     observations = []
@@ -447,6 +437,7 @@ def create_graph(
             edge_labels=edge_labels,
             parameters=parameters,
             param_schema=param_schema,
+            picture_name=f"graph-{parameters["name"]}-epoch{parameters["epoch"] + 1:02d}.png",
             visual_save_path=visual_save_path
         )
     return G
@@ -473,6 +464,7 @@ def visualize_graph(
         edge_labels,
         parameters: dict,
         param_schema=List[NodeDescriptor],
+        picture_name: str = "graph.png",
         visual_save_path: str = "results/graphics",
 ):
 
@@ -487,20 +479,19 @@ def visualize_graph(
         color = group_color_map.get(group, group_color_map["unknown"])
         node_colors.append(color)
 
-    fig = plt.figure(figsize=(12, 8))
-    gs = fig.add_gridspec(
-        nrows=2,
-        ncols=3,
-        width_ratios=[1, 1, 1],
-        height_ratios=[3, 1],
-        wspace=0.3,
-        hspace = 0.5
-    )
+    fig, ax_graph = plt.subplots()
+    # gs = fig.add_gridspec(
+    #     nrows=2,
+    #     ncols=3,
+    #     width_ratios=[1, 1, 1],
+    #     height_ratios=[3, 1],
+    #     wspace=0.3,
+    #     hspace = 0.5
+    # )
 
-    ax_graph = fig.add_subplot(gs[0, 0])
     ax_graph.axis('off')
     ax_graph.set_aspect('equal', adjustable='box')
-    ax_graph.set_title(f"Latent Graph beta={parameters["beta"]} — Epoch {parameters["epoch"]}", fontsize=11)
+    ax_graph.set_title(f"Latent Graph {parameters["name"]} — Epoch {parameters["epoch"]}", fontsize=11)
 
     nx.draw_networkx_nodes(
         G,
@@ -565,11 +556,6 @@ def visualize_graph(
         frameon=False
     )
 
-    ax_nodes = fig.add_subplot(gs[0, 1])
-    ax_edges = fig.add_subplot(gs[0, 2])
-    ax_nodes.axis('off')
-    ax_edges.axis('off')
-
     node_table_data = [["No.", "Name", "X", "Y"]]
     for i in range(len(latent_points)):
         name = param_schema[i].name if param_schema else f"node_{i}"
@@ -583,55 +569,8 @@ def visualize_graph(
         tgt_name = param_schema[tgt].name if param_schema else f"node_{tgt}"
         edge_table_data.append([src_name, tgt_name, f"{weight:.3f}"])
 
-    def calculate_column_widths(data):
-        if not data:
-            return []
-
-        num_cols = len(data[0])
-        max_lens = [0] * num_cols
-
-        for row_idx, row in enumerate(data):
-            for col_idx, cell_value in enumerate(row):
-                max_lens[col_idx] = max(max_lens[col_idx], len(str(cell_value)))
-
-        total_len = sum(max_lens)
-        if total_len == 0:
-            return [1.0 / num_cols] * num_cols
-
-        col_widths = [((length / total_len) * 0.95) + (0.05 / num_cols) for length in max_lens]
-        sum_widths = sum(col_widths)
-        col_widths = [w / sum_widths for w in col_widths]
-
-        return col_widths
-
-    node_col_widths = calculate_column_widths(node_table_data)
-    edge_col_widths = calculate_column_widths(edge_table_data)
-
-    table_nodes = ax_nodes.table(
-        cellText=node_table_data[1:],
-        colLabels=node_table_data[0],
-        loc="upper center",
-        cellLoc='center',
-        colWidths=node_col_widths
-    )
-    table_nodes.auto_set_font_size(False)
-    table_nodes.set_fontsize(7)
-
-    if len(edge_table_data) <= 1:
-        print("⚠ Warning: edge_table_data has no rows (only header). Skipping table rendering.")
-    else:
-        table_edges = ax_edges.table(
-        cellText=edge_table_data[1:],
-        colLabels=edge_table_data[0],
-        loc="upper center",
-        cellLoc='center',
-        colWidths=edge_col_widths
-        )
-        table_edges.auto_set_font_size(False)
-        table_edges.set_fontsize(7)
-
     plt.tight_layout()
-    filename = os.path.join(visual_save_path, f"graph-{parameters["beta"]}-epoch{parameters["epoch"] + 1:02d}.png")
+    filename = os.path.join(visual_save_path, picture_name)
     plt.savefig(filename, dpi=150, bbox_inches="tight")
     plt.close()
 
@@ -771,7 +710,7 @@ def calculate_graphs_metrics(
         G = info['graph']
         metrics = calculate_graph_metrics(G)
         metrics["epoch"] = epoch
-        metrics["beta"] = beta
+        metrics["name"] = beta
         rows.append(metrics)
 
     if is_save:
@@ -787,7 +726,7 @@ def save_graphs_metrics(
     os.makedirs(os.path.dirname(metrics_save_path), exist_ok=True)
     filepath = f"{metrics_save_path}/graph_metrics_all.csv"
     file_exists = os.path.exists(filepath)
-    fieldnames = ["epoch", "beta"] + [k for k in metrics[0] if k not in ["epoch", "beta", "label"]]
+    fieldnames = ["epoch", "name"] + [k for k in metrics[0] if k not in ["epoch", "name", "label"]]
 
     with open(filepath, mode='a', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -801,16 +740,18 @@ def main():
     # Generate dataset
     dataloader = generate_sample_data(
         num_samples=config.num_samples,
-        batch_size=config.batch_size
+        batch_size=config.batch_size,
+        seed=42,
     )
 
-    # Create model
-    model = GraphAutoEncoder(
-        input_dim=config.input_dim,
-        output_dim=config.output_dim,
-        hidden_dim=config.hidden_dim
-    ).to(device)
-    print(model)
+    algorithms = {
+        'fully-connected': create_full_connected_graph,
+        'beta-skeleton': lambda points: create_beta_skeleton_graph(points, beta=1.7),
+        'delaunay': create_delaunay_graph,
+        'gabriel': create_gabriel_graph,
+        'kNN': create_knn_graph,
+        'DAL': create_dal_graph
+    }
 
     param_schema: List[NodeDescriptor] = [
         NodeDescriptor("vel-x", "self_vel"),
@@ -827,28 +768,41 @@ def main():
         NodeDescriptor("agent_type", "agent"),
     ]
 
-    # Create a timestamped model filename
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    model_filename = f"graph_autoencoder_{timestamp}.pth"
+    for algo_name, graph_fn in algorithms.items():
+        print(f"\nTesting algorithm: {algo_name}")
+        # Create model
+        model = GraphAutoEncoder(
+            input_dim=config.input_dim,
+            output_dim=config.output_dim,
+            hidden_dim=config.hidden_dim,
+            graph_fn=graph_fn,
+        ).to(device)
+        print(model)
 
-    train_model(
-        model,
-        dataloader,
-        epochs=config.epochs,
-        lr=config.lr,
-        factor=config.factor,
-        patience=config.patience,
-        gamma=config.gamma,
-        param_schema=param_schema,
-        is_growth_from_central=config.is_growth_from_central,
-        model_save_path=f"{config.model_save_path}/{model_filename}",
-        is_visual=config.visualise,
-        visual_save_path=config.visual_save_path,
-        is_save=config.save_metrics,
-        data_save_path=config.data_save_path,
-    )
+        # Create a timestamped model filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        model_filename = f"graph_autoencoder_{algo_name}_{timestamp}.pth"
+
+        train_model(
+            model,
+            dataloader,
+            name=algo_name,
+            epochs=config.epochs,
+            lr=config.lr,
+            factor=config.factor,
+            patience=config.patience,
+            gamma=config.gamma,
+            param_schema=param_schema,
+            is_growth_from_central=config.is_growth_from_central,
+            model_save_path=config.model_save_path,
+            model_filename=model_filename,
+            is_visual=config.visualise,
+            visual_save_path=config.visual_save_path,
+            is_save=config.save_metrics,
+            data_save_path=config.data_save_path,
+        )
     
-    print(f"Training completed! Model saved as {model_filename}")
+        print(f"Training completed! Model saved as {model_filename}")
 
 if __name__ == "__main__":
     main()
