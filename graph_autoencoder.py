@@ -6,7 +6,7 @@ from collections import deque, defaultdict
 from matplotlib.patches import Circle
 from networkx.drawing import draw_networkx_edges
 from scipy.spatial import Voronoi, voronoi_plot_2d
-import matplotlib.patches as mpatches
+import matplotlib.lines as mlines
 from dataclasses import dataclass
 import numpy as np
 import torch
@@ -98,12 +98,37 @@ class NodeDescriptor:
     name: str
     group: str
 
-group_color_map = {
-    "self_vel": "#1f77b4",
-    "landmark": "#2ca02c",
-    "target": "#f54242",
-    "agent": "#8202fa",
-    "unknown": "#7f7f7f"
+
+param_schema: List[NodeDescriptor] = [
+    NodeDescriptor("vel-x", "self_vel"),
+    NodeDescriptor("vel-y", "self_vel"),
+    NodeDescriptor("landmark-1-rel-x", "landmark"),
+    NodeDescriptor("landmark-1-rel-y", "landmark"),
+    NodeDescriptor("landmark-2-rel-x", "landmark"),
+    NodeDescriptor("landmark-2-rel-y", "landmark"),
+    NodeDescriptor("landmark-3-rel-x", "landmark"),
+    NodeDescriptor("landmark-3-rel-y", "landmark"),
+    NodeDescriptor("is_landmark_1_target", "target"),
+    NodeDescriptor("is_landmark_2_target", "target"),
+    NodeDescriptor("is_landmark_3_target", "target"),
+    NodeDescriptor("agent_type", "agent"),
+]
+
+group_marker_map = {
+    "self_vel": "D",
+    "landmark": "s",
+    "target": "^",
+    "agent": "o",
+    "unknown": "X"
+}
+
+algorithms = {
+    'fully-connected': create_full_connected_graph,
+    'beta-skeleton': lambda points: create_beta_skeleton_graph(points, beta=1.7),
+    'delaunay': create_delaunay_graph,
+    'gabriel': create_gabriel_graph,
+    'kNN': create_knn_graph,
+    'DAL': create_dal_graph
 }
 
 class GraphAutoEncoder(nn.Module):
@@ -187,7 +212,8 @@ class GraphAutoEncoder(nn.Module):
             latent_list.append(latent)
             edge_index_list.append(edge_index)
             edge_attr_list.append(edge_attr)
-        return (batch[:, :, :4], batch[:, :, 4].reshape(64, 12, 1),
+        batch_size = batch.shape[0]
+        return (batch[:, :, :4], batch[:, :, 4].reshape(batch_size, 12, 1),
                 torch.stack(reconstructed_labels), torch.stack(reconstructed_values),
                 torch.stack(latent_list), edge_index_list, edge_attr_list)
 
@@ -470,55 +496,46 @@ def visualize_graph(
 
     os.makedirs(visual_save_path, exist_ok=True)
 
-    node_colors = []
-    for i in range(len(latent_points)):
-        if param_schema:
-            group = param_schema[i].group
-        else:
-            group = "unknown"
-        color = group_color_map.get(group, group_color_map["unknown"])
-        node_colors.append(color)
-
     fig, ax_graph = plt.subplots()
-    # gs = fig.add_gridspec(
-    #     nrows=2,
-    #     ncols=3,
-    #     width_ratios=[1, 1, 1],
-    #     height_ratios=[3, 1],
-    #     wspace=0.3,
-    #     hspace = 0.5
-    # )
-
     ax_graph.axis('off')
     ax_graph.set_aspect('equal', adjustable='box')
-    ax_graph.set_title(f"Latent Graph {parameters["name"]} — Epoch {parameters["epoch"]}", fontsize=11)
 
-    nx.draw_networkx_nodes(
-        G,
-        pos=positions,
-        node_color=node_colors,
-        node_size=60,
-        ax=ax_graph,
-        linewidths=0.8,
-        edgecolors="black"
+    nx.draw_networkx_edges(
+        G, pos=positions, ax=ax_graph, edge_color="#888888", width=1.2
     )
-
-    for i, (x, y) in positions.items():
-        ax_graph.annotate(
-            str(i),
-            (x, y),
-            textcoords="offset points",
-            xytext=(0, -10),
-            ha='center',
-            fontsize=7,
-            color='black'
-        )
-
-    nx.draw_networkx_edges(G, pos=positions, ax=ax_graph, edge_color="#2fe94e", width=1.2)
 
     # Draw MST
     mst = nx.minimum_spanning_tree(G)
-    nx.draw_networkx_edges(mst, pos=positions, ax=ax_graph, edge_color="#CA2171", width=1.6, style="dashed")
+    nx.draw_networkx_edges(
+        mst, pos=positions, ax=ax_graph, edge_color="#000000", width=1.6, style="dashed"
+    )
+
+    for group, marker in group_marker_map.items():
+        indices = [i for i, node in enumerate(param_schema) if getattr(node, 'group', 'unknown') == group]
+        if not indices:
+            continue
+        xs = [positions[i][0] for i in indices]
+        ys = [positions[i][1] for i in indices]
+        ax_graph.scatter(
+            xs, ys,
+            marker=marker,
+            s=100,
+            c="#222222",
+            edgecolors="#0a0a0a",
+            label=group,
+            zorder=3
+        )
+        # Подписи номеров
+        for idx in indices:
+            ax_graph.annotate(
+                str(idx),
+                positions[idx],
+                textcoords="offset points",
+                xytext=(0, -20),
+                ha='center',
+                fontsize=7,
+                color='black'
+            )
 
     # for src, tgt in edges:
     #     x1, y1 = positions[src]
@@ -540,11 +557,17 @@ def visualize_graph(
         coords.append([x, y])
     coords = np.array(coords)
     vor = Voronoi(coords)
-    voronoi_plot_2d(vor, ax=ax_graph, show_vertices=False, line_colors='orange', line_width=1.5, line_alpha=0.6, point_size=0)
+    voronoi_plot_2d(vor, ax=ax_graph, show_vertices=False, line_colors='gray', line_width=1.5, line_alpha=0.6, point_size=0)
 
     legend_elements = [
-        mpatches.Patch(color=color, label=group)
-        for group, color in group_color_map.items() if group != "unknown"
+        mlines.Line2D(
+            [], [], color='#0a0a0a',
+            marker=marker,
+            linestyle='None',
+            markersize=8,
+            label=group
+        )
+        for group, marker in group_marker_map.items()
     ]
 
     ax_graph.legend(
@@ -556,18 +579,26 @@ def visualize_graph(
         frameon=False
     )
 
-    node_table_data = [["No.", "Name", "X", "Y"]]
+    node_table_keys = ["No.", "Name", "X", "Y"]
+    node_table_data = []
     for i in range(len(latent_points)):
-        name = param_schema[i].name if param_schema else f"node_{i}"
-        x_val = latent_points[i][0].item()
-        y_val = latent_points[i][1].item()
-        node_table_data.append([str(i), name, f"{x_val:.3f}", f"{y_val:.3f}"])
+        data = {}
+        data["No."] = i
+        data["Name"] = param_schema[i].name if param_schema else f"node_{i}"
+        data["X"] = f"{latent_points[i][0].item():.3f}"
+        data["Y"] = f"{latent_points[i][1].item():.3f}"
+        node_table_data.append(data)
+    save_data_to_csv(node_table_keys, node_table_data, f"nodes-{picture_name}.csv")
 
-    edge_table_data = [["From", "To", "Weight"]]
+    edge_table_keys = ["From", "To", "Weight"]
+    edge_table_data = []
     for (src, tgt), weight in edge_labels.items():
-        src_name = param_schema[src].name if param_schema else f"node_{src}"
-        tgt_name = param_schema[tgt].name if param_schema else f"node_{tgt}"
-        edge_table_data.append([src_name, tgt_name, f"{weight:.3f}"])
+        data = {}
+        data["From"] = param_schema[src].name if param_schema else f"node_{src}"
+        data["To"] = param_schema[tgt].name if param_schema else f"node_{tgt}"
+        data["Weight"] = f"{weight:.3f}"
+        edge_table_data.append(data)
+    save_data_to_csv(edge_table_keys, edge_table_data, f"edges-{picture_name}.csv")
 
     plt.tight_layout()
     filename = os.path.join(visual_save_path, picture_name)
@@ -646,6 +677,17 @@ def compute_growth_layers(graph: nx.Graph, start_node: int, max_depth: int = 5):
                     queue.append((neighbor, depth + 1))
 
     return sorted([(k, len(v)) for k, v in growth.items()])
+
+def save_data_to_csv(keys: List[str], data: List[dict], filename: str, legend_save_path="results/graphics/"):
+    os.makedirs(os.path.dirname(legend_save_path), exist_ok=True)
+    filepath = f"{legend_save_path}/{filename}"
+    file_exists = os.path.exists(filepath)
+
+    with open(filepath, mode='a', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=keys)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerows(data)
 
 def save_growth_data_csv(data: List[dict], filename: str):
     os.makedirs(os.path.dirname(filename), exist_ok=True)
@@ -741,32 +783,9 @@ def main():
     dataloader = generate_sample_data(
         num_samples=config.num_samples,
         batch_size=config.batch_size,
-        seed=42,
     )
 
-    algorithms = {
-        'fully-connected': create_full_connected_graph,
-        'beta-skeleton': lambda points: create_beta_skeleton_graph(points, beta=1.7),
-        'delaunay': create_delaunay_graph,
-        'gabriel': create_gabriel_graph,
-        'kNN': create_knn_graph,
-        'DAL': create_dal_graph
-    }
 
-    param_schema: List[NodeDescriptor] = [
-        NodeDescriptor("vel-x", "self_vel"),
-        NodeDescriptor("vel-y", "self_vel"),
-        NodeDescriptor("landmark-1-rel-x", "landmark"),
-        NodeDescriptor("landmark-1-rel-y", "landmark"),
-        NodeDescriptor("landmark-2-rel-x", "landmark"),
-        NodeDescriptor("landmark-2-rel-y", "landmark"),
-        NodeDescriptor("landmark-3-rel-x", "landmark"),
-        NodeDescriptor("landmark-3-rel-y", "landmark"),
-        NodeDescriptor("is_landmark_1_target", "target"),
-        NodeDescriptor("is_landmark_2_target", "target"),
-        NodeDescriptor("is_landmark_3_target", "target"),
-        NodeDescriptor("agent_type", "agent"),
-    ]
 
     for algo_name, graph_fn in algorithms.items():
         print(f"\nTesting algorithm: {algo_name}")
@@ -780,8 +799,8 @@ def main():
         print(model)
 
         # Create a timestamped model filename
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        model_filename = f"graph_autoencoder_{algo_name}_{timestamp}.pth"
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+        model_filename = f"{algo_name}_{timestamp}.pth"
 
         train_model(
             model,
