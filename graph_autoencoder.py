@@ -59,7 +59,7 @@ class Config:
 
     # Parameters for configure results output
     visualise: bool = False                          # Enable create visualisation of epochs
-    visual_save_path: str = "results/graphics"       # Path where visualisation will be saved
+    visual_save_path: str = "results/graphics"  # Path where visualisation will be saved
     save_metrics: bool = False                       # Whether to save metrics to disk
     data_save_path: str = "results/metrics"          # Path where metrics will be saved
 
@@ -118,8 +118,7 @@ group_marker_map = {
     "self_vel": "D",
     "landmark": "s",
     "target": "^",
-    "agent": "o",
-    "unknown": "X"
+    "agent": "o"
 }
 
 algorithms = {
@@ -501,13 +500,13 @@ def visualize_graph(
     ax_graph.set_aspect('equal', adjustable='box')
 
     nx.draw_networkx_edges(
-        G, pos=positions, ax=ax_graph, edge_color="#888888", width=1.2
+        G, pos=positions, ax=ax_graph, edge_color="#888888", width=1, style="-."
     )
 
     # Draw MST
     mst = nx.minimum_spanning_tree(G)
     nx.draw_networkx_edges(
-        mst, pos=positions, ax=ax_graph, edge_color="#000000", width=1.6, style="dashed"
+        mst, pos=positions, ax=ax_graph, edge_color="#000000", width=2.5, style="-"
     )
 
     for group, marker in group_marker_map.items():
@@ -557,7 +556,7 @@ def visualize_graph(
         coords.append([x, y])
     coords = np.array(coords)
     vor = Voronoi(coords)
-    voronoi_plot_2d(vor, ax=ax_graph, show_vertices=False, line_colors='gray', line_width=1.5, line_alpha=0.6, point_size=0)
+    voronoi_plot_2d(vor, ax=ax_graph, show_vertices=False, line_colors='#CCCCCC', line_width=1.5, line_alpha=0.6, point_size=0)
 
     legend_elements = [
         mlines.Line2D(
