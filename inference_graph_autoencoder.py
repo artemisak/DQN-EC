@@ -42,7 +42,7 @@ def evaluate_model(model, batch, model_name,batch_idx=0):
     print("Batch:")
     print(batch)
     agent_type = guess_agent_type(batch)
-    print("🧠 Агент:", "говорящий (0)" if agent_type == 0 else "слушающий (1)")
+    print("🧠 Agent:", "speak (0)" if agent_type == 0 else "listen (1)")
     idx = 0
     obs = batch[idx]
 
