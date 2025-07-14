@@ -23,12 +23,29 @@ def load_model(model_path, device):
 
     return model
 
-def evaluate_model(model, batch, model_name):
+def guess_agent_type(batch: torch.Tensor) -> int:
+
+    last_col = batch[0, :, -1]
+
+
+    is_float_like = ~((last_col == -1) | (last_col == 0) | (last_col == 1))
+
+    if is_float_like.any():
+        return 1  # слушающий
+    else:
+        return 0  # говорящий
+
+
+def evaluate_model(model, batch, model_name,batch_idx=0):
     with torch.no_grad():
         _, _, logits, values, latent_list, edge_index_list, edge_attr_list = model(batch)
-
+    print("Batch:")
+    print(batch)
+    agent_type = guess_agent_type(batch)
+    print("🧠 Агент:", "говорящий (0)" if agent_type == 0 else "слушающий (1)")
     idx = 0
     obs = batch[idx]
+
     latent = latent_list[idx]
     edge_index = edge_index_list[idx]
     edge_attr = edge_attr_list[idx]
@@ -45,25 +62,25 @@ def evaluate_model(model, batch, model_name):
         latent_points=latent,
         edge_index=edge_index,
         edge_attr=edge_attr,
-        parameters={"epoch": 0, "name": model_name},
+        parameters={"epoch": 0, "name": f"{model_name}-agent{agent_type}-{batch_idx}"},
         param_schema=sorted_schema,
         is_visual=True,
         visual_save_path="results/graphics"
     )
 
-    # Пример: печатаем reconstructed значения
-    print(f"\n📊 Модель: {model_name}")
-    print("Softmax labels (первые 3 узла):")
-    print(torch.softmax(logits[0][:3], dim=-1))
-    print("Values (первые 3 узла):")
-    print(values[0][:3].squeeze())
+    # # Пример: печатаем reconstructed значения
+    # print(f"\n📊 Модель: {model_name}")
+    # print("Softmax labels (первые 3 узла):")
+    # print(torch.softmax(logits[0], dim=-1))
+    # print("Values:")
+    # print(values[0].squeeze())
 
 
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    loader = generate_sample_data(num_samples=1, batch_size=1)
-    batch = next(iter(loader))[0]
-    batch = batch.to(device)
+    num_batches = 5  # 🔁 количество батчей, которое хотите обработать
+    loader = generate_sample_data(num_samples=num_batches, batch_size=1)
+
     model_dir = "results/models"
     model_files = [f for f in os.listdir(model_dir) if f.endswith(".pth")]
 
@@ -73,7 +90,9 @@ def main():
     for model_file in sorted(model_files):
         model_path = os.path.join(model_dir, model_file)
         model = load_model(model_path, device)
-        evaluate_model(model, batch, model_file)
+        for batch_idx, (batch,) in enumerate(loader):
+            batch = batch.to(device)
+            evaluate_model(model, batch, model_file, batch_idx=batch_idx)
 
 
 if __name__ == "__main__":
