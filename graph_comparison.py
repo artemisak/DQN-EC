@@ -6,20 +6,104 @@ from torch_geometric.nn import GATv2Conv
 from torch_geometric.data import Data
 from datetime import datetime
 import json
+import matplotlib.pyplot as plt
+from matplotlib.collections import LineCollection
+import os
+from pettingzoo.mpe import simple_speaker_listener_v4
 
 from graphs_wrapper import (
     create_delaunay_graph,
     create_beta_skeleton_graph,
     create_gabriel_graph,
-    create_dal_graph,
+    create_knn_gabriel_pruning_graph,
     create_knn_graph,
     create_full_connected_graph
 )
-from graph_autoencoder import generate_sample_data
+
+
+# Gray encoding
+GRAY_FORWARD_MAPPING = {
+    1: [0, 0, 0, 0], # agent_type
+    2: [0, 0, 0, 1], # self_velocity_x
+    3: [0, 0, 1, 1], # self_velocity_y
+    4: [0, 0, 1, 0], # landmark_1_rel_x
+    5: [0, 1, 1, 0], # landmark_1_rel_y
+    6: [0, 1, 1, 1], # landmark_2_rel_x
+    7: [0, 1, 0, 1], # landmark_2_rel_y
+    8: [0, 1, 0, 0], # landmark_3_rel_x
+    9: [1, 1, 0, 0], # landmark_3_rel_y
+    10: [1, 1, 0, 1], # landmark_1_is_target
+    11: [1, 1, 1, 1], # landmark_2_is_target
+    12: [1, 1, 1, 0] # landmark_3_is_target
+}
+
+GRAY_INVERTED_MAPPING = {
+    (0, 0, 0, 0): 1,
+    (0, 0, 0, 1): 2,
+    (0, 0, 1, 1): 3,
+    (0, 0, 1, 0): 4,
+    (0, 1, 1, 0): 5,
+    (0, 1, 1, 1): 6,
+    (0, 1, 0, 1): 7,
+    (0, 1, 0, 0): 8,
+    (1, 1, 0, 0): 9,
+    (1, 1, 0, 1): 10,
+    (1, 1, 1, 1): 11,
+    (1, 1, 1, 0): 12
+}
 
 # Determine device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
+
+
+# Generate sample data
+def generate_sample_data(num_samples=1024, batch_size=64):
+    """Sample the data from the environment with a random policy"""
+    
+    env = simple_speaker_listener_v4.parallel_env(max_cycles=num_samples)
+    env.reset()
+    observations = []
+    
+    def create_observation_pair(message):
+        """Create both observation variants for a message"""
+
+        # First observation (agent_type=0)
+        obs1 = torch.zeros(12, 5)
+        obs1[:, :4] = torch.tensor(list(GRAY_FORWARD_MAPPING.values()))  # labels
+        obs1[0, 4] = 0 # agent_type
+        obs1[1:9, 4] = torch.tensor(message[:8])  # velocity and landmarks
+        obs1[9:, 4] = -1 # masked out
+
+        # First observation (agent_type=0)
+        obs2 = torch.zeros(12, 5)
+        obs2[:, :4] = torch.tensor(list(GRAY_FORWARD_MAPPING.values()))  # labels
+        obs2[0, 4] = 1 # agent_type
+        obs2[1:9, 4] = -1  # masked out
+        obs2[9:, 4] = torch.tensor(message[8:])  # target flags
+
+        perm = torch.randperm(len(GRAY_FORWARD_MAPPING))
+        obs1 = obs1[perm]
+        obs2 =  obs2[perm]
+
+        return [obs1, obs2]
+
+    while env.agents and len(observations) < num_samples:
+        actions = {agent: env.action_space(agent).sample() for agent in env.agents}
+        obs, *_ = env.step(actions)
+        observations.extend(create_observation_pair(obs['listener_0']))
+    
+    env.close()
+
+    observations = torch.stack(observations)
+    perm = torch.randperm(len(observations))
+    observations = observations[perm]
+
+    return torch.utils.data.DataLoader(
+        torch.utils.data.TensorDataset(observations.to(device)),
+        batch_size=batch_size,
+        shuffle=True
+    )
 
 
 class GraphAutoEncoderComparison(nn.Module):
@@ -129,6 +213,82 @@ def l1_loss(edge_attr_list):
     return torch.norm(torch.cat(edge_attr_list), p=1)
 
 
+def visualize_latent_graph(latent_points, edge_index, edge_attr, algo_name, save_path):
+    """
+    Visualize the latent space graph and save as PNG
+    
+    Args:
+        latent_points: 2D points in latent space (N x 2)
+        edge_index: Edge indices (2 x E)
+        edge_attr: Edge attributes/weights (E,)
+        algo_name: Name of the algorithm
+        save_path: Path to save the PNG
+    """
+    # Convert to numpy for plotting
+    points = latent_points.detach().cpu().numpy()
+    edges = edge_index.detach().cpu().numpy()
+    weights = edge_attr.detach().cpu().numpy() if edge_attr is not None else None
+    
+    # Create figure
+    fig, ax = plt.subplots(1, 1, figsize=(10, 10))
+    
+    # Plot edges
+    if edges.shape[1] > 0:
+        # Create line segments for edges
+        lines = []
+        for i in range(edges.shape[1]):
+            start_idx = edges[0, i]
+            end_idx = edges[1, i]
+            lines.append([points[start_idx], points[end_idx]])
+        
+        # Create LineCollection
+        if weights is not None:
+            # Normalize weights for coloring
+            weights_norm = (weights - weights.min()) / (weights.max() - weights.min() + 1e-8)
+            lc = LineCollection(lines, cmap='viridis', linewidths=1.5)
+            lc.set_array(weights_norm.flatten())
+            ax.add_collection(lc)
+            
+            # Add colorbar
+            cbar = plt.colorbar(lc, ax=ax)
+            cbar.set_label('Edge Weight (normalized)', fontsize=12)
+        else:
+            lc = LineCollection(lines, colors='gray', linewidths=1.0, alpha=0.6)
+            ax.add_collection(lc)
+    
+    # Plot nodes
+    scatter = ax.scatter(points[:, 0], points[:, 1], 
+                        c='red', s=100, zorder=5, 
+                        edgecolors='black', linewidths=1.5)
+    
+    # Set axis properties
+    ax.set_xlabel('Latent Dimension 1', fontsize=14)
+    ax.set_ylabel('Latent Dimension 2', fontsize=14)
+    ax.set_title(f'{algo_name}', fontsize=16, fontweight='bold')
+    ax.grid(True, alpha=0.3)
+    
+    # Set axis limits with some padding
+    margin = 0.1
+    x_range = points[:, 0].max() - points[:, 0].min()
+    y_range = points[:, 1].max() - points[:, 1].min()
+    ax.set_xlim(points[:, 0].min() - margin * x_range, points[:, 0].max() + margin * x_range)
+    ax.set_ylim(points[:, 1].min() - margin * y_range, points[:, 1].max() + margin * y_range)
+    
+    # Add statistics
+    num_nodes = points.shape[0]
+    num_edges = edges.shape[1]
+    avg_degree = 2 * num_edges / num_nodes if num_nodes > 0 else 0
+    
+    stats_text = f'Nodes: {num_nodes}\nEdges: {num_edges}\nAvg Degree: {avg_degree:.2f}'
+    ax.text(0.02, 0.98, stats_text, transform=ax.transAxes, 
+            verticalalignment='top', fontsize=12,
+            bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close()
+
+
 def train_and_track_metrics(model, dataloader, epochs, lr, track_epochs):
     """Train model and track metrics at specific epochs"""
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
@@ -137,6 +297,7 @@ def train_and_track_metrics(model, dataloader, epochs, lr, track_epochs):
     )
 
     metrics = {epoch: {} for epoch in track_epochs}
+    last_epoch_graph_data = None
 
     for epoch in range(epochs):
         model.train()
@@ -147,7 +308,7 @@ def train_and_track_metrics(model, dataloader, epochs, lr, track_epochs):
             'total_loss': []
         }
 
-        for _, (batch,) in enumerate(dataloader):
+        for batch_idx, (batch,) in enumerate(dataloader):
             # Forward pass
             true_distribution, true_values, predicted_logits, predicted_values, latent_batch, edge_index_list, edge_attr_list = model(
                 batch)
@@ -166,6 +327,15 @@ def train_and_track_metrics(model, dataloader, epochs, lr, track_epochs):
             epoch_metrics['graph_loss'].append(graph_loss_val.item())
             epoch_metrics['total_loss'].append(total_loss.item())
 
+            # Save graph data from last epoch, first batch
+            if epoch == epochs - 1 and batch_idx == 0:
+                # Use the first sample in the batch
+                last_epoch_graph_data = {
+                    'latent': latent_batch[0],  # First sample
+                    'edge_index': edge_index_list[0],
+                    'edge_attr': edge_attr_list[0]
+                }
+
             # Backward and optimize
             optimizer.zero_grad()
             total_loss.backward()
@@ -183,7 +353,7 @@ def train_and_track_metrics(model, dataloader, epochs, lr, track_epochs):
         # Update learning rate
         scheduler.step(avg_metrics['total_loss'])
 
-    return metrics
+    return metrics, last_epoch_graph_data
 
 
 def run_comparison():
@@ -191,7 +361,7 @@ def run_comparison():
 
     # Define algorithms to test
     algorithms = {
-        'DAL': create_dal_graph,
+        'kNN with Gabriel Pruning': create_knn_gabriel_pruning_graph,
         'Beta Skeleton (β=1.7)': lambda points: create_beta_skeleton_graph(points, beta=1.7),
         'Beta Skeleton (β=1.0)': create_gabriel_graph,
         'Fully Connected': create_full_connected_graph,
@@ -205,6 +375,11 @@ def run_comparison():
     lr = 0.0025
     track_epochs = [1, 5, 10, 15, 20, 25, 30]
 
+    # Create visualization directory
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    viz_dir = f'graph_visualizations_{timestamp}'
+    os.makedirs(viz_dir, exist_ok=True)
+
     # Results storage
     all_results = []  # For averaged results
     raw_results = {}  # For raw data before averaging
@@ -212,6 +387,9 @@ def run_comparison():
     print("Starting graph algorithm comparison...")
     print(f"Running {num_runs} trials for each algorithm")
     print(f"Tracking epochs: {track_epochs}")
+    print(f"Visualizations will be saved to: {viz_dir}/")
+    print(f"  - Each algorithm will have its own subdirectory")
+    print(f"  - Each subdirectory will contain {num_runs} PNG files (one per run at epoch 30)")
     print("-" * 80)
 
     for algo_name, graph_fn in algorithms.items():
@@ -221,6 +399,11 @@ def run_comparison():
 
         # Initialize raw results storage for this algorithm
         raw_results[algo_name] = {epoch: {'runs': []} for epoch in track_epochs}
+
+        # Create subdirectory for this algorithm's visualizations
+        safe_algo_name = algo_name.replace('/', '_').replace('(', '_').replace(')', '_').replace(' ', '_')
+        algo_viz_dir = os.path.join(viz_dir, safe_algo_name)
+        os.makedirs(algo_viz_dir, exist_ok=True)
 
         for run in range(num_runs):
             print(f"  Run {run + 1}/{num_runs}")
@@ -237,9 +420,20 @@ def run_comparison():
             ).to(device)
 
             # Train and track metrics
-            run_metrics = train_and_track_metrics(
+            run_metrics, graph_data = train_and_track_metrics(
                 model, dataloader, epochs, lr, track_epochs
             )
+
+            # Visualize the graph data from epoch 30 for this run
+            if graph_data is not None:
+                viz_path = os.path.join(algo_viz_dir, f'run_{run+1:03d}_epoch30.png')
+                visualize_latent_graph(
+                    graph_data['latent'][:, :2],  # Use only first 2 dimensions
+                    graph_data['edge_index'],
+                    graph_data['edge_attr'],
+                    f'{algo_name} - Run {run+1}',
+                    viz_path
+                )
 
             # Store raw results for each run
             for epoch in track_epochs:
@@ -254,6 +448,8 @@ def run_comparison():
                 # Accumulate for averaging
                 for metric_name in ['first_term', 'second_term', 'graph_loss', 'total_loss']:
                     algo_results[epoch][metric_name].append(run_metrics[epoch][metric_name])
+
+        print(f"  Saved {num_runs} visualizations to {algo_viz_dir}/")
 
         # Calculate averages and store
         for epoch in track_epochs:
@@ -272,8 +468,6 @@ def run_comparison():
             all_results.append(avg_result)
 
     # Save results
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
     # Save averaged results
     averaged_results_dict = {
         'parameters': {
@@ -281,7 +475,8 @@ def run_comparison():
             'epochs': epochs,
             'learning_rate': lr,
             'tracked_epochs': track_epochs,
-            'timestamp': timestamp
+            'timestamp': timestamp,
+            'visualization_directory': viz_dir
         },
         'results': all_results
     }
@@ -297,7 +492,8 @@ def run_comparison():
             'epochs': epochs,
             'learning_rate': lr,
             'tracked_epochs': track_epochs,
-            'timestamp': timestamp
+            'timestamp': timestamp,
+            'visualization_directory': viz_dir
         },
         'raw_data': raw_results
     }
@@ -320,6 +516,9 @@ def run_comparison():
     print(f"\nResults saved to:")
     print(f"  - {averaged_filename} (averaged results by epoch)")
     print(f"  - {raw_filename} (raw data before averaging)")
+    print(f"  - {viz_dir}/ (latent space graph visualizations)")
+    print(f"    └── Each algorithm has its own subdirectory with 100 visualizations (one per run)")
+    print(f"\nTotal visualizations created: {len(algorithms) * num_runs} PNG files")
 
 
 if __name__ == "__main__":

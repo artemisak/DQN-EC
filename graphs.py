@@ -404,7 +404,7 @@ class AnisotropicDelaunayAlgorithm(GraphAlgorithm):
         )
 
 
-class DALGGAlgorithm(GraphAlgorithm):
+class KNNGPAlgorithm(GraphAlgorithm):
     """
     Density-Adaptive Local Geometric Graph algorithm.
 
@@ -420,7 +420,7 @@ class DALGGAlgorithm(GraphAlgorithm):
     """
     def __init__(self, k_density: int = 6, alpha: float = 1.8, beta: float = 0.88):
         """
-        Initialize DALGG algorithm.
+        Initialize KNNGP algorithm.
 
         Args:
             1. k_density: Number of neighbors for density estimation
@@ -444,11 +444,11 @@ class DALGGAlgorithm(GraphAlgorithm):
 
     @property
     def name(self) -> str:
-        return f"DALGG(k={self.k_density},α={self.alpha},β={self.beta})"
+        return f"KNNGP(k={self.k_density},α={self.alpha},β={self.beta})"
 
     def construct(self, points: np.ndarray) -> GraphResult:
         """
-        Construct graph from points using DALGG algorithm.
+        Construct graph from points using KNNGP algorithm.
 
         Args:
             points: n × d array of point coordinates
@@ -603,7 +603,7 @@ class DALGGAlgorithm(GraphAlgorithm):
         return True
 
 
-class NormalizedDALGGAlgorithm(GraphAlgorithm):
+class NormalizedKNNGPAlgorithm(GraphAlgorithm):
     """
     Improved Density-Adaptive Local Geometric Graph algorithm.
 
@@ -617,7 +617,7 @@ class NormalizedDALGGAlgorithm(GraphAlgorithm):
     def __init__(self, k_density: int = 6, alpha: float = 0.5, beta: float = 1.0,
                  min_neighbors: int = 3, max_neighbor_ratio: float = 3.0):
         """
-        Initialize Improved DALGG algorithm.
+        Initialize Normalized KNNGP algorithm.
 
         Args:
             k_density: Number of neighbors for density estimation (increased default)
@@ -635,7 +635,7 @@ class NormalizedDALGGAlgorithm(GraphAlgorithm):
 
     @property
     def name(self) -> str:
-        return f"ImprovedDALGG(k={self.k_density},α={self.alpha},β={self.beta})"
+        return f"NormalizedKNNGP(k={self.k_density},α={self.alpha},β={self.beta})"
 
     def construct(self, points: np.ndarray) -> GraphResult:
         start_time = time.time()

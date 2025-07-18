@@ -108,7 +108,7 @@ def plot_comparison_results(df, parameters, save_dir="comparison_plots"):
                         capsize=5, capthick=2, linewidth=2, markersize=8)
 
         ax.set_xlabel('Epoch', fontsize=12)
-        ax.set_ylabel('Loss Value', fontsize=12)
+        ax.set_ylabel('Loss Value (Log Scale)', fontsize=12)
         ax.set_title(title, fontsize=14)
         ax.legend(fontsize=10)
         ax.grid(True, alpha=0.3)
@@ -420,7 +420,7 @@ def perform_statistical_comparison(raw_data, df, epoch=30, save_dir="comparison_
                                    n_permutations=10000, filter_outliers=False,
                                    iqr_multiplier=1.5):
     """
-    Perform permutation tests between DAL and its closest competitor at specified epoch.
+    Perform permutation tests between kNN with Gabriel Pruning and its closest competitor at specified epoch.
 
     Parameters:
     -----------
@@ -449,35 +449,35 @@ def perform_statistical_comparison(raw_data, df, epoch=30, save_dir="comparison_
     else:
         print("Outlier filtering: DISABLED")
 
-    # Check if DAL exists and epoch data is available
-    if 'DAL' not in raw_data or str(epoch) not in raw_data['DAL']:
-        print(f"DAL data not found for epoch {epoch}")
+    # Check if kNN with Gabriel Pruning exists and epoch data is available
+    if 'kNN with Gabriel Pruning' not in raw_data or str(epoch) not in raw_data['kNN with Gabriel Pruning']:
+        print(f"kNN with Gabriel Pruning data not found for epoch {epoch}")
         return
 
-    # Get DAL's performance at specified epoch
-    dal_epoch_data = df[(df['Algorithm'] == 'DAL') & (df['Epoch'] == epoch)]
-    if dal_epoch_data.empty:
-        print(f"No DAL data found for epoch {epoch}")
+    # Get kNN with Gabriel Pruning's performance at specified epoch
+    knn_gabriel_pruning_epoch_data = df[(df['Algorithm'] == 'kNN with Gabriel Pruning') & (df['Epoch'] == epoch)]
+    if knn_gabriel_pruning_epoch_data.empty:
+        print(f"No kNN with Gabriel Pruning data found for epoch {epoch}")
         return
 
-    dal_total_loss = dal_epoch_data['Total Loss Mean'].values[0]
+    knn_gabriel_pruning_total_loss = knn_gabriel_pruning_epoch_data['Total Loss Mean'].values[0]
 
     # Find closest competitor based on total loss at specified epoch
-    other_algos_epoch = df[(df['Algorithm'] != 'DAL') & (df['Epoch'] == epoch)].copy()
+    other_algos_epoch = df[(df['Algorithm'] != 'kNN with Gabriel Pruning') & (df['Epoch'] == epoch)].copy()
     if other_algos_epoch.empty:
         print("No other algorithms found for comparison")
         return
 
-    other_algos_epoch['Diff_from_DAL'] = abs(other_algos_epoch['Total Loss Mean'] - dal_total_loss)
-    closest_competitor = other_algos_epoch.loc[other_algos_epoch['Diff_from_DAL'].idxmin(), 'Algorithm']
+    other_algos_epoch['Diff_from_kNN_with_Gabriel_Pruning'] = abs(other_algos_epoch['Total Loss Mean'] - knn_gabriel_pruning_total_loss)
+    closest_competitor = other_algos_epoch.loc[other_algos_epoch['Diff_from_kNN_with_Gabriel_Pruning'].idxmin(), 'Algorithm']
 
-    print(f"\nDAL Total Loss at Epoch {epoch}: {dal_total_loss:.6f}")
+    print(f"\nkNN_with_Gabriel_Pruning Total Loss at Epoch {epoch}: {knn_gabriel_pruning_total_loss:.6f}")
     print(f"Closest Competitor: {closest_competitor}")
     print(f"{closest_competitor} Total Loss at Epoch {epoch}: "
           f"{other_algos_epoch[other_algos_epoch['Algorithm'] == closest_competitor]['Total Loss Mean'].values[0]:.6f}")
 
     # Get raw data for both algorithms at specified epoch
-    dal_runs = raw_data['DAL'][str(epoch)]['runs']
+    knn_gabriel_pruning_runs = raw_data['kNN with Gabriel Pruning'][str(epoch)]['runs']
     competitor_runs = raw_data[closest_competitor][str(epoch)]['runs']
 
     # Extract values for each metric
@@ -489,16 +489,16 @@ def perform_statistical_comparison(raw_data, df, epoch=30, save_dir="comparison_
     ]
 
     print(f"\n{'=' * 60}")
-    print(f"Permutation Tests: DAL vs {closest_competitor}")
+    print(f"Permutation Tests: kNN with Gabriel Pruning vs {closest_competitor}")
     print(f"{'=' * 60}")
-    print(f"Number of runs: DAL={len(dal_runs)}, {closest_competitor}={len(competitor_runs)}")
+    print(f"Number of runs: kNN with Gabriel Pruning={len(knn_gabriel_pruning_runs)}, {closest_competitor}={len(competitor_runs)}")
     print(f"Number of permutations: {n_permutations}")
 
-    if len(dal_runs) < 3 or len(competitor_runs) < 3:
+    if len(knn_gabriel_pruning_runs) < 3 or len(competitor_runs) < 3:
         print("\nWARNING: Sample size is very small (< 3). Results should be interpreted with caution.")
         print("Consider collecting more runs for more reliable statistical inference.")
 
-    if len(dal_runs) < 2 or len(competitor_runs) < 2:
+    if len(knn_gabriel_pruning_runs) < 2 or len(competitor_runs) < 2:
         print("\nERROR: Cannot perform comparison with fewer than 2 samples per group.")
         print("Please collect more runs before performing statistical comparison.")
         return
@@ -510,81 +510,81 @@ def perform_statistical_comparison(raw_data, df, epoch=30, save_dir="comparison_
     all_permutation_results = {}
 
     for metric_key, metric_name in metrics:
-        dal_values_raw = [run[metric_key] for run in dal_runs]
+        knn_gabriel_pruning_values_raw = [run[metric_key] for run in knn_gabriel_pruning_runs]
         competitor_values_raw = [run[metric_key] for run in competitor_runs]
 
         # Apply outlier filtering if requested
         if filter_outliers:
-            dal_values, dal_outlier_idx = filter_outliers_iqr(dal_values_raw, iqr_multiplier)
+            knn_gabriel_pruning_values, knn_gabriel_pruning_outlier_idx = filter_outliers_iqr(knn_gabriel_pruning_values_raw, iqr_multiplier)
             competitor_values, comp_outlier_idx = filter_outliers_iqr(competitor_values_raw, iqr_multiplier)
 
             outlier_summary.append({
                 'Metric': metric_name,
-                'DAL_outliers': len(dal_outlier_idx),
+                'kNN_with_Gabriel_Pruning_outliers': len(knn_gabriel_pruning_outlier_idx),
                 'Competitor_outliers': len(comp_outlier_idx),
-                'DAL_remaining': len(dal_values),
+                'kNN_with_Gabriel_Pruning_remaining': len(knn_gabriel_pruning_values),
                 'Competitor_remaining': len(competitor_values)
             })
 
             # Keep track of which values are outliers for visualization
-            dal_outliers = [dal_values_raw[i] for i in dal_outlier_idx]
+            knn_gabriel_pruning_outliers = [knn_gabriel_pruning_values_raw[i] for i in knn_gabriel_pruning_outlier_idx]
             comp_outliers = [competitor_values_raw[i] for i in comp_outlier_idx]
         else:
-            dal_values = dal_values_raw
+            knn_gabriel_pruning_values = knn_gabriel_pruning_values_raw
             competitor_values = competitor_values_raw
-            dal_outliers = []
+            knn_gabriel_pruning_outliers = []
             comp_outliers = []
 
         # Check if we have enough data after filtering
-        if filter_outliers and (len(dal_values) < 2 or len(competitor_values) < 2):
+        if filter_outliers and (len(knn_gabriel_pruning_values) < 2 or len(competitor_values) < 2):
             print(f"\nERROR: Too few samples remain after outlier filtering for {metric_name}")
-            print(f"       DAL: {len(dal_values)}, {closest_competitor}: {len(competitor_values)}")
+            print(f"       kNN with Gabriel Pruning: {len(knn_gabriel_pruning_values)}, {closest_competitor}: {len(competitor_values)}")
             print("       Skipping this metric...")
             continue
 
         # Perform permutation test
-        # Since lower loss is better, we use 'less' to test if DAL < competitor
+        # Since lower loss is better, we use 'less' to test if kNN with Gabriel Pruning < competitor
         observed_diff, p_value, permuted_diffs = permutation_test(
-            dal_values, competitor_values, n_permutations=n_permutations, alternative='two-sided'
+            knn_gabriel_pruning_values, competitor_values, n_permutations=n_permutations, alternative='two-sided'
         )
 
         all_permutation_results[metric_key] = {
             'observed_diff': observed_diff,
             'permuted_diffs': permuted_diffs,
             'p_value': p_value,
-            'dal_outliers': dal_outliers,
+            'knn_gabriel_pruning_outliers': knn_gabriel_pruning_outliers,
             'comp_outliers': comp_outliers
         }
 
         # Calculate descriptive statistics
-        dal_mean = np.mean(dal_values)
-        dal_std = np.std(dal_values, ddof=1)
-        dal_median = np.median(dal_values)
+        knn_gabriel_pruning_mean = np.mean(knn_gabriel_pruning_values)
+        knn_gabriel_pruning_std = np.std(knn_gabriel_pruning_values, ddof=1)
+        knn_gabriel_pruning_median = np.median(knn_gabriel_pruning_values)
         comp_mean = np.mean(competitor_values)
         comp_std = np.std(competitor_values, ddof=1)
         comp_median = np.median(competitor_values)
 
         # Calculate effect size (Cohen's d)
-        pooled_std = np.sqrt(((len(dal_values) - 1) * dal_std ** 2 +
+        pooled_std = np.sqrt(((len(knn_gabriel_pruning_values) - 1) * knn_gabriel_pruning_std ** 2 +
                               (len(competitor_values) - 1) * comp_std ** 2) /
-                             (len(dal_values) + len(competitor_values) - 2))
+                             (len(knn_gabriel_pruning_values) + len(competitor_values) - 2))
 
-        cohen_d = (dal_mean - comp_mean) / pooled_std if pooled_std > 0 else 0
+        cohen_d = (knn_gabriel_pruning_mean - comp_mean) / pooled_std if pooled_std > 0 else 0
 
         print(f"\n{metric_name}:")
         if filter_outliers and outlier_summary:
             metric_outliers = outlier_summary[-1]  # Last added entry
-            print(f"  Outliers removed: DAL={metric_outliers['DAL_outliers']}, "
+            print(f"  Outliers removed: kNN with Gabriel Pruning={metric_outliers['kNN_with_Gabriel_Pruning_outliers']}, "
                   f"{closest_competitor}={metric_outliers['Competitor_outliers']}")
-        print(f"  DAL:     mean={dal_mean:.6f}, std={dal_std:.6f}, median={dal_median:.6f}")
+        print(f"  kNN with Gabriel Pruning:     mean={knn_gabriel_pruning_mean:.6f}, std={knn_gabriel_pruning_std:.6f}, median={knn_gabriel_pruning_median:.6f}")
         print(f"  {closest_competitor}: mean={comp_mean:.6f}, std={comp_std:.6f}, median={comp_median:.6f}")
-        print(f"  Observed difference (DAL - {closest_competitor}): {observed_diff:.6f}")
+        print(f"  Observed difference (kNN with Gabriel Pruning - {closest_competitor}): {observed_diff:.6f}")
         print(f"  Permutation test p-value: {p_value:.4f}")
         print(f"  Cohen's d: {cohen_d:.4f}")
 
         # Interpret results
         if p_value < 0.05:
-            better = "DAL" if observed_diff < 0 else closest_competitor
+            better = "kNN with Gabriel Pruning" if observed_diff < 0 else closest_competitor
             print(f"  Result: Statistically significant difference (p < 0.05)")
             print(f"          {better} performs significantly better")
         else:
@@ -605,36 +605,36 @@ def perform_statistical_comparison(raw_data, df, epoch=30, save_dir="comparison_
     # Create a 4x3 grid: 4 metrics × (boxplot + histogram + QQ plot)
     for idx, (metric_key, metric_name) in enumerate(metrics):
         if filter_outliers:
-            dal_values_raw = [run[metric_key] for run in dal_runs]
+            knn_gabriel_pruning_values_raw = [run[metric_key] for run in knn_gabriel_pruning_runs]
             competitor_values_raw = [run[metric_key] for run in competitor_runs]
-            dal_values, _ = filter_outliers_iqr(dal_values_raw, iqr_multiplier)
+            knn_gabriel_pruning_values, _ = filter_outliers_iqr(knn_gabriel_pruning_values_raw, iqr_multiplier)
             competitor_values, _ = filter_outliers_iqr(competitor_values_raw, iqr_multiplier)
         else:
-            dal_values = [run[metric_key] for run in dal_runs]
+            knn_gabriel_pruning_values = [run[metric_key] for run in knn_gabriel_pruning_runs]
             competitor_values = [run[metric_key] for run in competitor_runs]
 
         perm_results = all_permutation_results[metric_key]
 
         # Boxplot
         ax1 = plt.subplot(4, 3, idx * 3 + 1)
-        bp = ax1.boxplot([dal_values, competitor_values],
-                         tick_labels=['DAL', closest_competitor],
+        bp = ax1.boxplot([knn_gabriel_pruning_values, competitor_values],
+                         tick_labels=['kNN with Gabriel Pruning', closest_competitor],
                          patch_artist=True, showmeans=True,
                          meanprops=dict(marker='D', markerfacecolor='red', markersize=8))
         bp['boxes'][0].set_facecolor('lightblue')
         bp['boxes'][1].set_facecolor('lightgreen')
 
         # Add individual points
-        x1 = np.random.normal(1, 0.04, len(dal_values))
+        x1 = np.random.normal(1, 0.04, len(knn_gabriel_pruning_values))
         x2 = np.random.normal(2, 0.04, len(competitor_values))
-        ax1.scatter(x1, dal_values, alpha=0.5, s=30, color='blue', label='Data points')
+        ax1.scatter(x1, knn_gabriel_pruning_values, alpha=0.5, s=30, color='blue', label='Data points')
         ax1.scatter(x2, competitor_values, alpha=0.5, s=30, color='green')
 
         # Add outliers as red X marks if filtering is enabled
-        if filter_outliers and (perm_results['dal_outliers'] or perm_results['comp_outliers']):
-            if perm_results['dal_outliers']:
-                x1_out = np.random.normal(1, 0.04, len(perm_results['dal_outliers']))
-                ax1.scatter(x1_out, perm_results['dal_outliers'], alpha=0.8, s=50,
+        if filter_outliers and (perm_results['knn_gabriel_pruning_outliers'] or perm_results['comp_outliers']):
+            if perm_results['knn_gabriel_pruning_outliers']:
+                x1_out = np.random.normal(1, 0.04, len(perm_results['knn_gabriel_pruning_outliers']))
+                ax1.scatter(x1_out, perm_results['knn_gabriel_pruning_outliers'], alpha=0.8, s=50,
                             color='red', marker='x', linewidth=2, label='Outliers (removed)')
             if perm_results['comp_outliers']:
                 x2_out = np.random.normal(2, 0.04, len(perm_results['comp_outliers']))
@@ -668,40 +668,17 @@ def perform_statistical_comparison(raw_data, df, epoch=30, save_dir="comparison_
         ax3 = plt.subplot(4, 3, idx * 3 + 3)
 
         # Combine data for Q-Q plot
-        all_values = dal_values + competitor_values
+        all_values = knn_gabriel_pruning_values + competitor_values
         stats.probplot(all_values, dist="norm", plot=ax3)
         ax3.set_title(f'Q-Q Plot (Normality Check)\nCombined Data', fontsize=10)
         ax3.grid(True, alpha=0.3)
 
     filter_text = f" (Outliers Filtered, IQR×{iqr_multiplier})" if filter_outliers else ""
-    plt.suptitle(f'Statistical Comparison: DAL vs {closest_competitor} at Epoch {epoch}\n'
+    plt.suptitle(f'Statistical Comparison: kNN with Gabriel Pruning vs {closest_competitor} at Epoch {epoch}\n'
                  f'Permutation Test with {n_permutations} permutations{filter_text}', fontsize=14)
     plt.tight_layout()
     filter_suffix = "_filtered" if filter_outliers else ""
     plt.savefig(os.path.join(save_dir, f'permutation_test_comparison_epoch{epoch}{filter_suffix}.png'),
-                dpi=300, bbox_inches='tight')
-    plt.show()
-
-    # Create a summary visualization of p-values
-    plt.figure(figsize=(10, 6))
-    metrics_names = [m[1] for m in metrics]
-    p_values = [results_summary[i]['p-value'] for i in range(len(metrics))]
-    colors = ['red' if p < 0.05 else 'gray' for p in p_values]
-
-    bars = plt.bar(range(len(metrics_names)), p_values, color=colors, alpha=0.7)
-    plt.axhline(y=0.05, color='black', linestyle='--', label='α = 0.05')
-
-    for i, (bar, p_val) in enumerate(zip(bars, p_values)):
-        plt.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.01,
-                 f'{p_val:.4f}', ha='center', va='bottom', fontsize=10)
-
-    plt.xticks(range(len(metrics_names)), metrics_names, rotation=45, ha='right')
-    plt.ylabel('p-value', fontsize=12)
-    plt.title(f'Permutation Test p-values: DAL vs {closest_competitor}', fontsize=14)
-    plt.legend()
-    plt.grid(True, alpha=0.3, axis='y')
-    plt.tight_layout()
-    plt.savefig(os.path.join(save_dir, f'permutation_pvalues_summary_epoch{epoch}{filter_suffix}.png'),
                 dpi=300, bbox_inches='tight')
     plt.show()
 
@@ -733,9 +710,9 @@ def perform_statistical_comparison(raw_data, df, epoch=30, save_dir="comparison_
         outlier_df = pd.DataFrame(outlier_summary)
         print(outlier_df.to_string(index=False))
 
-        total_dal_removed = sum(row['DAL_outliers'] for row in outlier_summary)
+        total_knn_gabriel_pruning_removed = sum(row['kNN_with_Gabriel_Pruning_outliers'] for row in outlier_summary)
         total_comp_removed = sum(row['Competitor_outliers'] for row in outlier_summary)
-        print(f"\nTotal outliers removed: DAL={total_dal_removed}, {closest_competitor}={total_comp_removed}")
+        print(f"\nTotal outliers removed: kNN with Gabriel Pruning={total_knn_gabriel_pruning_removed}, {closest_competitor}={total_comp_removed}")
         print(f"IQR multiplier used: {iqr_multiplier} (lower = more aggressive filtering)")
 
 
@@ -754,7 +731,7 @@ if __name__ == "__main__":
         with open(latest_file, 'r') as f:
             raw_json = json.load(f)
 
-        df, parameters = load_and_process_results(latest_file)
+        df, parameters = load_and_process_results(latest_file, filter=False)
 
         print(f"\nLoaded data for {len(df['Algorithm'].unique())} algorithms")
         print(f"Epochs tracked: {sorted(df['Epoch'].unique())}")
@@ -766,4 +743,4 @@ if __name__ == "__main__":
         # create_latex_table(df)
 
         # Perform statistical comparison at epoch 30
-        perform_statistical_comparison(raw_json['raw_data'], df, epoch=30, save_dir=save_dir, filter_outliers=True)
+        perform_statistical_comparison(raw_json['raw_data'], df, epoch=30, save_dir=save_dir, filter_outliers=False)

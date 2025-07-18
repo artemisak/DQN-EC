@@ -28,4 +28,4 @@ python graph_autoencoder.py
     - Tabular node and edge summaries
 
 Example of visualisation:
-![epoch.png](./resources/epoch-example.png)
+![epoch.png](./graph_visualizations_20250714_155357/kNN_with_Gabriel_Pruning/run_040_epoch30.png)

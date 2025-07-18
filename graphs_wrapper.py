@@ -6,7 +6,7 @@ from graphs import (
     BetaSkeletonAlgorithm, 
     AMADGAlgorithm,
     AnisotropicDelaunayAlgorithm,
-    DALGGAlgorithm,
+    KNNGPAlgorithm,
     KNNGraphAlgorithm,
     FullyConnectedGraphAlgorithm
 )
@@ -107,26 +107,26 @@ class TorchAnisotropicDelaunayGraph:
         return self.wrapper.construct_graph(points)
 
 
-class TorchDALGG:
-    """Torch-compatible DALGG graph constructor.
+class TorchKNNGP:
+    """Torch-compatible KNNGP graph constructor.
 
     Configuration 1: More neighbors for better density estimation
-    'DAL-Dense': lambda points: create_dal_graph(points, k_density=5, alpha=1.5, beta=0.9),
+    Dense: lambda points: create_knn_gabriel_pruning_graph(points, k_density=5, alpha=1.5, beta=0.9),
 
     Configuration 2: More aggressive density adaptation
-    'DAL-Adaptive': lambda points: create_dal_graph(points, k_density=4, alpha=2.0, beta=0.85),
+    Adaptive: lambda points: create_gabriel_pruning_graph(points, k_density=4, alpha=2.0, beta=0.85),
 
     Configuration 3: Less restrictive Gabriel criterion
-    'DAL-Relaxed': lambda points: create_dal_graph(points, k_density=5, alpha=1.3, beta=0.95),
+    Relaxed: lambda points: create_gabriel_pruning_graph(points, k_density=5, alpha=1.3, beta=0.95),
 
     Configuration 4: Balanced approach
-    'DAL-Balanced': lambda points: create_dal_graph(points, k_density=6, alpha=1.8, beta=0.88),
+    Balanced: lambda points: create_gabriel_pruning_graph(points, k_density=6, alpha=1.8, beta=0.88),
     """
-    def __init__(self, k_density: int = 6, alpha: float = 0.8, beta: float = 1.7):
-        self.wrapper = TorchGraphWrapper(DALGGAlgorithm(k_density=k_density, alpha=alpha, beta=beta))
+    def __init__(self, k_density: int = 6, alpha: float = 1.5, beta: float = 1.0):
+        self.wrapper = TorchGraphWrapper(KNNGPAlgorithm(k_density=k_density, alpha=alpha, beta=beta))
 
     def create_graph(self, points: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Create DALGG graph from torch tensor points."""
+        """Create KNNGP graph from torch tensor points."""
         return self.wrapper.construct_graph(points)
 
 
@@ -212,10 +212,10 @@ def create_anisotropic_graph(points: torch.Tensor, **kwargs) -> Tuple[torch.Tens
     return anisotropic_graph.create_graph(points)
 
 
-def create_dal_graph(points: torch.Tensor, **kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Create DALGG graph from torch tensor points."""
-    dal_graph = TorchDALGG(**kwargs)
-    return dal_graph.create_graph(points)
+def create_knn_gabriel_pruning_graph(points: torch.Tensor, **kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Create KNNGP graph from torch tensor points."""
+    knn_gabriel_pruning_graph = TorchKNNGP(**kwargs)
+    return knn_gabriel_pruning_graph.create_graph(points)
 
 def create_knn_graph(points: torch.Tensor, **kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
     """Create KNN graph from torch tensor points."""
