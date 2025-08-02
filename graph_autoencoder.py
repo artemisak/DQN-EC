@@ -212,7 +212,7 @@ class GraphAutoEncoder(nn.Module):
             edge_index_list.append(edge_index)
             edge_attr_list.append(edge_attr)
         batch_size = batch.shape[0]
-        return (batch[:, :, :4], batch[:, :, 4].reshape(batch_size, 12, 1),
+        return (batch[:, :, :4], batch[:, :, 4].reshape(batch_size, 9, 1),
                 torch.stack(reconstructed_labels), torch.stack(reconstructed_values),
                 torch.stack(latent_list), edge_index_list, edge_attr_list)
 
@@ -340,6 +340,7 @@ def train_model(
                 edge_attr=edge_attr_list[idx],
                 parameters={"epoch": epoch+1, "name": name},
                 param_schema=sorted_schema,
+                group_marker_map=group_marker_map,
                 is_visual=is_visual,
                 visual_save_path=visual_save_path
             )
@@ -425,7 +426,8 @@ def create_graph(
         edge_index,
         edge_attr,
         parameters: dict,
-        param_schema=List[NodeDescriptor],
+        param_schema: List[NodeDescriptor],
+        group_marker_map: dict,
         is_visual: bool = False,
         visual_save_path: str = "results/graphics",
 ) -> nx.Graph:
@@ -460,8 +462,8 @@ def create_graph(
             positions=positions,
             latent_points=latent_points,
             edge_labels=edge_labels,
-            parameters=parameters,
             param_schema=param_schema,
+            group_marker_map=group_marker_map,
             picture_name=f"graph-{parameters["name"]}-epoch{parameters["epoch"] + 1:02d}.png",
             visual_save_path=visual_save_path
         )
@@ -487,8 +489,8 @@ def visualize_graph(
         positions,
         latent_points,
         edge_labels,
-        parameters: dict,
-        param_schema=List[NodeDescriptor],
+        param_schema: List[NodeDescriptor],
+        group_marker_map: dict,
         picture_name: str = "graph.png",
         visual_save_path: str = "results/graphics",
 ):
@@ -527,7 +529,7 @@ def visualize_graph(
         # Подписи номеров
         for idx in indices:
             ax_graph.annotate(
-                str(idx),
+                param_schema[idx].name,#str(idx),
                 positions[idx],
                 textcoords="offset points",
                 xytext=(0, -20),

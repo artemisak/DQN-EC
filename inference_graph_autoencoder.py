@@ -2,7 +2,6 @@ import os
 import torch
 from graph_autoencoder import GraphAutoEncoder, generate_sample_data, GRAY_INVERTED_MAPPING, create_graph, param_schema, algorithms
 
-from typing import List
 
 def load_model(model_path, device):
     checkpoint = torch.load(model_path, map_location=device)
