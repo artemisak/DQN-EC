@@ -1,23 +1,61 @@
-import torch
+from datetime import datetime
+import os
+from dataclasses import dataclass
+
 import numpy as np
+import tyro
 from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
     AutoModel
 )
+import torch
+import torch.nn.functional as F
+from torch.utils.data import DataLoader, TensorDataset
 import matplotlib.pyplot as plt
 import seaborn as sns
 from typing import List, Dict, Tuple
 import warnings
 warnings.filterwarnings('ignore')
-from graph_autoencoder import GraphAutoEncoder, algorithms, create_graph,NodeDescriptor
+from graph_autoencoder import GraphAutoEncoder, algorithms, create_graph,NodeDescriptor,save_loss_log
 
-print("🎨 Color Token Vector Extractor")
-print("=" * 40)
-
-# Check if GPU is available
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
+
+@dataclass
+class Config:
+    # Training hyperparameters
+    epochs: int = 100                        # Total number of training epochs
+    lr: float = 0.0025                      # Learning rate for optimizer
+    model_save_path: str = "results/models" # Path where trained model will be saved
+
+    # Data generation
+    num_samples: int = 1024                 # Number of synthetic samples to generate from the environment
+    batch_size: int = 64                    # Batch size used in training
+
+    # Learning rate scheduler parameters
+    factor: float = 0.5                     # Factor by which the learning rate will be reduced
+    patience: int = 5                       # Number of epochs with no improvement after which LR will be reduced
+
+    # Other training parameters
+    alpha: float = 0.1                      # Skip connection blending coefficient in GAT
+    max_norm: float = 1.0                   # Maximum norm for gradient clipping
+    gamma: float = 0.1
+
+    # Metrics Parameters
+    is_growth_from_central: bool = False    # Enable calculate growth from central user node
+
+    # Parameters for configure results output
+    visualise: bool = True                          # Enable create visualisation of epochs
+    visual_save_path: str = "results/graphics"  # Path where visualisation will be saved
+    save_metrics: bool = False                       # Whether to save metrics to disk
+    data_save_path: str = "results/metrics"          # Path where metrics will be saved
+
+classes = ['red', 'green', 'blue', 'other']
+epsilon = 0.1
+group_marker_map = {
+    "word": "o"
+}
 
 class ColorTokenVectorExtractor:
     def __init__(self, model_name="distilgpt2"):
@@ -100,32 +138,33 @@ class ColorTokenVectorExtractor:
         }
 
     def predict_color_from_rgb(self, r: int, g: int, b: int) -> str:
-        """Simple rule-based color prediction"""
-        colors = {
-            'red': (r > 127 and r > g and r > b),
-            'green': (g > 127 and g > r and g > b),
-            'blue': (b > 127 and b > r and b > g),
-            'yellow': (r > 127 and g > 127 and b < 76),
-            'cyan': (g > 127 and b > 127 and r < 76),
-            'magenta': (r > 127 and b > 127 and g < 76),
-            'orange': (r > 153 and 76 < g < 153 and b < 76),
-            'purple': (r > 76 and b > 127 and g < 102),
-            'white': (r > 204 and g > 204 and b > 204),
-            'black': (r < 51 and g < 51 and b < 51),
-            'gray': (abs(r - g) < 25 and abs(g - b) < 25 and 51 < r < 204),
-        }
 
-        for color, condition in colors.items():
-            if condition:
-                return color
+        total = r + g + b
+        if total == 0:
 
-        # Default to dominant channel
-        if r >= g and r >= b:
+            return 'red'  # Default choice
+
+        r_ratio = r / total
+        g_ratio = g / total
+        b_ratio = b / total
+
+        threshold = 0.4
+
+        if r_ratio >= threshold and r_ratio >= g_ratio and r_ratio >= b_ratio:
             return 'red'
-        elif g >= r and g >= b:
+        elif g_ratio >= threshold and g_ratio >= r_ratio and g_ratio >= b_ratio:
             return 'green'
-        else:
+        elif b_ratio >= threshold and b_ratio >= r_ratio and b_ratio >= g_ratio:
             return 'blue'
+        else:
+
+            max_component = max(r, g, b)
+            if r == max_component:
+                return 'red'
+            elif g == max_component:
+                return 'green'
+            else:
+                return 'blue'
 
     def get_vector_statistics(self, token_vectors: Dict[str, np.ndarray]) -> Dict:
         """Get statistics about the token vectors"""
@@ -198,45 +237,8 @@ class ColorTokenVectorExtractor:
             vector_end = f"{vector[-1]:.2f}"
             print(f"{token:>10} / [{vector_preview}, ..., {vector_end}]")
 
-# Initialize the extractor with different model options
-print("\n🎯 Available Models:")
-print("1. distilgpt2 (82M params) - Fast, good for experimentation")
-print("2. gpt2 (124M params) - Slightly larger, more capable")
-print("3. distilbert-base-uncased (66M params) - BERT-based, different architecture")
-
-# You can change this to experiment with different models
-MODEL_NAME = "distilgpt2"  # Change to "gpt2" or "distilbert-base-uncased" to try others
-
-print(f"\n🚀 Initializing with {MODEL_NAME}...")
-extractor = ColorTokenVectorExtractor(MODEL_NAME)
-
-# Main example - exactly as requested
-print("\n" + "="*60)
-print("🧪 MAIN EXAMPLE - COLOR ANALYSIS")
-print("="*60)
-
-# Your exact example
-test_question = "What color is this 15 R 15 G 65 B"
-print(f"📝 Question: {test_question}")
-
-# Extract token vectors
-result = extractor.analyze_color_tokens(15, 15, 65)
-
-# Print in your requested format
-extractor.print_detailed_vectors(result['token_vectors'])
-
-
-print(f"\n🎨 Answer: {result['predicted_color']}")
-
-# Additional analysis
-print(f"\n📊 Vector Statistics:")
-stats = result['vector_stats']
-print(f"   • Number of tokens: {stats['num_tokens']}")
-print(f"   • Vector dimension: {stats['vector_dimension']}")
-print(f"   • Average vector magnitude: {stats['mean_magnitude']:.2f}")
-
 # Interactive functions
-def quick_color_analysis(r: float, g: float, b: float):
+def quick_color_analysis(extractor, r: float, g: float, b: float):
     """Quick analysis function for testing different colors"""
     result = extractor.analyze_color_tokens(r, g, b)
     print(f"\n🎨 RGB({r}, {g}, {b}) Analysis:")
@@ -244,7 +246,7 @@ def quick_color_analysis(r: float, g: float, b: float):
     extractor.print_detailed_vectors(result['token_vectors'], max_dims=5)
     pass
 
-def compare_colors(colors: List[Tuple[float, float, float]]):
+def compare_colors(extractor, colors: List[Tuple[float, float, float]]):
     """Compare token vectors for different colors"""
     results = []
 
@@ -256,7 +258,7 @@ def compare_colors(colors: List[Tuple[float, float, float]]):
 
     return results
 
-def analyze_specific_tokens(text: str, target_tokens: List[str]):
+def analyze_specific_tokens(extractor, text: str, target_tokens: List[str]):
     """Focus on specific tokens in the text"""
     token_vectors = extractor.extract_token_vectors(text)
 
@@ -271,51 +273,312 @@ def analyze_specific_tokens(text: str, target_tokens: List[str]):
         else:
             print(f"Token containing '{target}' not found")
 
-model = GraphAutoEncoder(
-    input_dim=stats['vector_dimension'],
-    output_dim=3,
-    hidden_dim=64,
-    graph_fn=algorithms["delaunay"]
-)
-
-group_marker_map = {
-    "word": "o"
-}
 
 def create_param_schema_from_tokens(tokens, default_group="word"):
-    """
-    Создает param_schema для списка токенов.
-    Каждому токену назначается группа (по умолчанию 'token', можно изменить логику группировки).
-    """
     return [NodeDescriptor(name=tok, group=default_group) for tok in tokens]
 
+def create_soft_label(class_name, classes, epsilon=0.1):
+    n = len(classes)
+    smooth_value = epsilon / (n - 1)
+    soft_label = torch.full((n,), smooth_value)
 
-def evaluate_model(model, batch, model_name,batch_idx=0):
-    with torch.no_grad():
-        _, _, logits, values, latent_list, edge_index_list, edge_attr_list = model(batch)
-    print("Batch:")
-    print(batch)
-    idx = 0
-    obs = batch[idx]
+    if class_name not in classes:
+        raise ValueError(f"Class '{class_name}' not in class list {classes}")
 
-    tokens = list(result['token_vectors'].keys())
-    param_schema = create_param_schema_from_tokens(tokens)
+    class_idx = classes.index(class_name)
+    soft_label[class_idx] = 1.0 - epsilon
+    return soft_label
 
-    latent = latent_list[idx]
-    edge_index = edge_index_list[idx]
-    edge_attr = edge_attr_list[idx]
+def multimodal_color_data_generator(n_samples, extractor):
+    for _ in range(n_samples):
+        r, g, b = torch.randint(0, 256, (3,)).tolist()
+        result = extractor.analyze_color_tokens(r, g, b)
+        yield {
+            'token_vectors': result['token_vectors'],
+            'gpt_color_label': result['predicted_color'],
+            'rgb': (r, g, b),
+            'tokens': list(result['token_vectors'].keys())
+        }
 
-    G = create_graph(
-        latent_points=latent,
-        edge_index=edge_index,
-        edge_attr=edge_attr,
-        parameters={"epoch": 0, "name": f"{model_name}-{batch_idx}"},
-        param_schema=param_schema,
-        group_marker_map=group_marker_map,
-        is_visual=True,
-        visual_save_path="results/graphics"
+def generate_color_token_dataloader(
+    extractor,
+    num_samples=1024,
+    batch_size=64,
+    classes=None,
+    epsilon=0.1,
+    device='cpu'
+):
+    if classes is None:
+        raise ValueError("Argument `classes` must be provided.")
+
+    observations, labels, tokens_all = [], [], []
+
+    for data in multimodal_color_data_generator(num_samples, extractor):
+        token_vecs = list(data["token_vectors"].values())
+        label = data["gpt_color_label"]
+        tokens = data["tokens"]
+
+        observations.append(torch.tensor(token_vecs, dtype=torch.float32))
+        labels.append(create_soft_label(label, classes, epsilon))
+        tokens_all.append(tokens)
+
+    max_len = max(obs.shape[0] for obs in observations)
+    vector_dim = observations[0].shape[1]
+
+    padded_observations = []
+    for obs in observations:
+        pad_len = max_len - obs.shape[0]
+        if pad_len > 0:
+            padding = torch.zeros((pad_len, vector_dim))
+            obs = torch.cat([obs, padding], dim=0)
+        padded_observations.append(obs)
+
+    data_tensor = torch.stack(padded_observations).to(device)
+    label_tensor = torch.stack(labels).to(device)
+
+    dataset = TensorDataset(data_tensor, label_tensor)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+
+    return dataloader, tokens_all
+
+
+def train_model(
+        model,
+        dataloader,
+        name: str,
+        epochs: int,
+        lr: float,
+        factor: float,
+        patience: int,
+        param_schema: list[NodeDescriptor],
+        model_save_path: str = "results/models",
+        model_filename: str = "model.pth",
+        is_visual: bool = False,
+        visual_save_path: str = "results/graphics",
+        is_save: bool = False,
+        data_save_path: str = "results/metrics"
+):
+    os.makedirs(model_save_path, exist_ok=True)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=factor, patience=patience
     )
 
-data = result['token_vectors'].values()
-batch = torch.tensor(list(data)).unsqueeze(0).to(device)
-evaluate_model(model, batch, "test", 1)
+    print(f"🎯 Starting training for {epochs} epochs...")
+    print(f"   Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+    print(f"   Optimizer: Adam (lr={lr})")
+
+    for epoch in range(epochs):
+        model.train()
+        epoch_loss = 0.0
+        total_kl_loss = 0.0
+        total_reg_loss = 0.0
+
+        for batch_idx, (batch_data, soft_labels) in enumerate(dataloader):
+            batch_data = batch_data.to(device)
+            soft_labels = soft_labels.to(device)
+
+            _, _, logits_batch, values_batch, latent_list, edge_index_list, edge_attr_list = model(batch_data)
+
+            batch_size = logits_batch.shape[0]
+
+            batch_kl_loss = 0
+            batch_reg_loss = 0
+
+            for i in range(batch_size):
+                sample_logits = logits_batch[i]  # [seq_len, num_classes]
+                sample_soft_labels = soft_labels[i]  # [num_classes]
+                sample_original = batch_data[i]  # [seq_len, embed_dim]
+
+                averaged_logits = torch.mean(sample_logits, dim=0)  # [num_classes]
+                gae_probs = F.softmax(averaged_logits, dim=0)
+
+                kl_loss = F.kl_div(gae_probs.log(), sample_soft_labels, reduction='batchmean')
+                batch_kl_loss += kl_loss
+
+                if i < len(latent_list):
+                    latent_sample = latent_list[i]  # [seq_len, latent_dim]
+                    latent_reg = torch.norm(latent_sample, p=1) * 0.001
+                    batch_reg_loss += latent_reg
+
+            avg_kl_loss = batch_kl_loss / batch_size
+            avg_recon_loss = batch_reg_loss / batch_size
+
+            loss = avg_kl_loss + 0.1 * avg_recon_loss
+
+            optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+
+            epoch_loss += loss.item()
+            total_kl_loss += avg_kl_loss.item()
+            total_reg_loss += avg_recon_loss.item()
+
+        avg_loss = epoch_loss / len(dataloader)
+        avg_kl = total_kl_loss / len(dataloader)
+        avg_recon = total_reg_loss / len(dataloader)
+
+        print(f'Epoch [{epoch + 1}/{epochs}]')
+        print(f'  Total Loss: {avg_loss:.6f} | KL Loss: {avg_kl:.6f} | Reg Loss: {avg_recon:.6f}')
+
+        if is_save:
+            save_loss_log(
+                epoch=epoch + 1,
+                avg_loss=avg_loss,
+                data_save_path=data_save_path
+            )
+
+        scheduler.step(avg_loss)
+        current_lr = optimizer.param_groups[0]['lr']
+        print(f'  Learning Rate: {current_lr:.2e}')
+
+        if (epoch % 10 == 0) or (epoch == epochs - 1):
+            print(f'\n🔍 Detailed Analysis - Epoch {epoch + 1}:')
+
+            model.eval()
+
+            with torch.no_grad():
+                test_batch, test_labels = next(iter(dataloader))
+                test_batch = test_batch.to(device)
+                test_labels = test_labels.to(device)
+
+                _, _, test_logits, _, test_latent, test_edges, _ = model(test_batch)
+
+                correct_predictions = 0
+                total_predictions = 0
+
+                for i in range(min(3, test_logits.shape[0])):
+                    sample_logits = test_logits[i]
+                    averaged_logits = torch.mean(sample_logits, dim=0)
+                    gae_probs = F.softmax(averaged_logits, dim=0)
+
+                    gae_pred_idx = gae_probs.argmax().item()
+                    gae_pred = classes[gae_pred_idx]
+
+                    gpt_pred_idx = test_labels[i].argmax().item()
+                    gpt_pred = classes[gpt_pred_idx]
+
+                    confidence = gae_probs.max().item()
+                    is_correct = gae_pred_idx == gpt_pred_idx
+
+                    if is_correct:
+                        correct_predictions += 1
+                    total_predictions += 1
+
+                    status = "✅" if is_correct else "❌"
+                    print(f'    Sample {i + 1}: {status} GPT="{gpt_pred}" | GAE="{gae_pred}" (conf={confidence:.3f})')
+
+                    prob_str = " | ".join([f"{cls}:{prob:.2f}" for cls, prob in zip(classes, gae_probs.cpu().numpy())])
+                    print(f'      Probabilities: {prob_str}')
+
+                accuracy = correct_predictions / total_predictions if total_predictions > 0 else 0
+                print(f'    Accuracy: {accuracy:.1%} ({correct_predictions}/{total_predictions})')
+
+            model.train()
+
+            if is_visual and len(test_latent) > 0:
+                idx = 0
+                latent_sample = test_latent[idx]
+                edge_index_sample = test_edges[idx] if len(test_edges) > idx else None
+
+                if edge_index_sample is not None:
+                    num_edges = edge_index_sample.shape[1] if edge_index_sample.numel() > 0 else 0
+                    edge_attr_sample = torch.ones(num_edges) if num_edges > 0 else torch.tensor([])
+
+                    try:
+                        schema = param_schema[:latent_sample.shape[0]] if param_schema else []
+                        if len(schema) < latent_sample.shape[0]:
+                            for i in range(len(schema), latent_sample.shape[0]):
+                                schema.append(NodeDescriptor(f"token_{i}", "word"))
+
+                        graph = create_graph(
+                            latent_points=latent_sample,
+                            edge_index=edge_index_sample,
+                            edge_attr=edge_attr_sample,
+                            parameters={"epoch": epoch + 1, "name": name},
+                            param_schema=schema,
+                            group_marker_map=group_marker_map,
+                            is_visual=is_visual,
+                            visual_save_path=visual_save_path
+                        )
+                    except Exception as e:
+                        print(f"      ⚠️ Graph visualization failed: {e}")
+
+        if current_lr < 1e-6:
+            print(f"⏹️ Early stopping: learning rate too small ({current_lr:.2e})")
+            break
+
+    # Save the trained model
+    torch.save({
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(),
+        'final_loss': avg_loss,
+        'epochs_trained': epochs,
+        'model_config': {
+            'input_dim': model.encoder[0].in_features,
+            'output_dim': 3,
+            'hidden_dim': 64
+        },
+        'classes': classes,
+        'final_accuracy': accuracy if 'accuracy' in locals() else 0.0
+    }, f"{model_save_path}/{model_filename}")
+
+    print(f"\n✅ Training completed!")
+    print(f"📁 Model saved to {model_save_path}/{model_filename}")
+    if 'accuracy' in locals():
+        print(f"🎯 Final accuracy: {accuracy:.1%}")
+
+def main():
+    config = tyro.cli(Config)
+    # Initialize the extractor with different model options
+    print("\n🎯 Available Models:")
+    print("1. distilgpt2 (82M params) - Fast, good for experimentation")
+    print("2. gpt2 (124M params) - Slightly larger, more capable")
+    print("3. distilbert-base-uncased (66M params) - BERT-based, different architecture")
+
+    # You can change this to experiment with different models
+    MODEL_NAME = "distilgpt2"  # Change to "gpt2" or "distilbert-base-uncased" to try others
+
+    print(f"\n🚀 Initializing with {MODEL_NAME}...")
+    extractor = ColorTokenVectorExtractor(MODEL_NAME)
+
+    model = GraphAutoEncoder(
+        input_dim=extractor.model.config.hidden_size,
+        output_dim=3,
+        hidden_dim=64,
+        graph_fn=algorithms["delaunay"]
+    )
+
+    dataloader, tokens_all = generate_color_token_dataloader(
+        extractor=extractor,
+        num_samples=config.num_samples,
+        batch_size=config.batch_size,
+        classes=classes,
+        epsilon=0.1,
+        device='cuda' if torch.cuda.is_available() else 'cpu'
+    )
+
+    # Create a timestamped model filename
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+    model_filename = f"gpt-to-gae_{timestamp}.pth"
+
+    train_model(
+        model=model,
+        dataloader=dataloader,
+        name="gae-kl-train",
+        epochs=config.epochs,                         # config.epochs
+        lr=config.lr,                         # config.lr
+        factor=config.factor,                        # config.factor
+        patience=config.patience,                        # config.patience
+        param_schema = create_param_schema_from_tokens(tokens_all[0]),
+        model_save_path=config.model_save_path,
+        model_filename=model_filename,
+        is_visual=config.visualise,
+        visual_save_path=config.visual_save_path,
+    )
+
+if __name__ == "__main__":
+    main()
