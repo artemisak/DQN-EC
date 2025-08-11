@@ -212,7 +212,7 @@ class GraphAutoEncoder(nn.Module):
             edge_index_list.append(edge_index)
             edge_attr_list.append(edge_attr)
         batch_size = batch.shape[0]
-        return (batch[:, :, :4], batch[:, :, 4].reshape(batch_size, 9, 1),
+        return (batch[:, :, :4], batch[:, :, 4].unsqueeze(-1),
                 torch.stack(reconstructed_labels), torch.stack(reconstructed_values),
                 torch.stack(latent_list), edge_index_list, edge_attr_list)
 
@@ -278,7 +278,6 @@ def train_model(
 
             # Forward pass
             true_distribution, true_values, predicted_logits, predicted_values, latent_batch, edge_index_list, edge_attr_list = model(batch)
-
             # Calculate the combined loss function
             loss = reconstruction_loss(
                 true_distribution=true_distribution,
@@ -464,7 +463,7 @@ def create_graph(
             edge_labels=edge_labels,
             param_schema=param_schema,
             group_marker_map=group_marker_map,
-            picture_name=f"graph-{parameters["name"]}-epoch{parameters["epoch"] + 1:02d}.png",
+            parameters=parameters,
             visual_save_path=visual_save_path
         )
     return G
@@ -491,13 +490,16 @@ def visualize_graph(
         edge_labels,
         param_schema: List[NodeDescriptor],
         group_marker_map: dict,
-        picture_name: str = "graph.png",
+        parameters: dict,
         visual_save_path: str = "results/graphics",
 ):
 
     os.makedirs(visual_save_path, exist_ok=True)
-
+    picture_name = f"graph-{parameters["name"]}-epoch{parameters["epoch"] + 1:02d}.png"
     fig, ax_graph = plt.subplots()
+    if "title" in parameters.keys():
+        ax_graph.set_title(parameters["title"])
+
     ax_graph.axis('off')
     ax_graph.set_aspect('equal', adjustable='box')
 
@@ -785,8 +787,6 @@ def main():
         num_samples=config.num_samples,
         batch_size=config.batch_size,
     )
-
-
 
     for algo_name, graph_fn in algorithms.items():
         print(f"\nTesting algorithm: {algo_name}")

@@ -123,7 +123,7 @@ class ColorTokenVectorExtractor:
         """
         Analyze token vectors for a color question
         """
-        question = f"What color is this {r} R {g} G {b} B"
+        question = f"What color is this R{r} G{g} B{b}"
         token_vectors = self.extract_token_vectors(question)
 
         # Simple color prediction based on RGB values
@@ -470,41 +470,45 @@ def train_model(
                     status = "✅" if is_correct else "❌"
                     print(f'    Sample {i + 1}: {status} GPT="{gpt_pred}" | GAE="{gae_pred}" (conf={confidence:.3f})')
 
+                    # Show GPT soft labels for comparison
+                    gpt_soft_probs = test_labels[i].cpu().numpy()
+                    gpt_prob_str = " | ".join([f"{cls}:{prob:.2f}" for cls, prob in zip(classes, gpt_soft_probs)])
+                    print(f'      Probabilities GPT: {gpt_prob_str}')
+
+                    # Show GAE probabilities
                     prob_str = " | ".join([f"{cls}:{prob:.2f}" for cls, prob in zip(classes, gae_probs.cpu().numpy())])
-                    print(f'      Probabilities: {prob_str}')
+                    print(f'      Probabilities GAE: {prob_str}')
+
+                    latent_sample = test_latent[i]
+                    edge_index_sample = test_edges[i]
+
+                    if edge_index_sample is not None:
+                        num_edges = edge_index_sample.shape[1] if edge_index_sample.numel() > 0 else 0
+                        edge_attr_sample = torch.ones(num_edges) if num_edges > 0 else torch.tensor([])
+
+                        try:
+                            schema = param_schema[:latent_sample.shape[0]] if param_schema else []
+                            if len(schema) < latent_sample.shape[0]:
+                                for i in range(len(schema), latent_sample.shape[0]):
+                                    schema.append(NodeDescriptor(f"token_{i}", "word"))
+
+                            graph = create_graph(
+                                latent_points=latent_sample,
+                                edge_index=edge_index_sample,
+                                edge_attr=edge_attr_sample,
+                                parameters={"epoch": epoch + 1, "name": f"{name}-{'success' if is_correct else 'failed'}", "title": f"GPT={gpt_pred} | GAE={gae_pred}"},
+                                param_schema=schema,
+                                group_marker_map=group_marker_map,
+                                is_visual=is_visual,
+                                visual_save_path=visual_save_path
+                            )
+                        except Exception as e:
+                            print(f"⚠️ Graph visualization failed: {e}")
 
                 accuracy = correct_predictions / total_predictions if total_predictions > 0 else 0
                 print(f'    Accuracy: {accuracy:.1%} ({correct_predictions}/{total_predictions})')
 
             model.train()
-
-            if is_visual and len(test_latent) > 0:
-                idx = 0
-                latent_sample = test_latent[idx]
-                edge_index_sample = test_edges[idx] if len(test_edges) > idx else None
-
-                if edge_index_sample is not None:
-                    num_edges = edge_index_sample.shape[1] if edge_index_sample.numel() > 0 else 0
-                    edge_attr_sample = torch.ones(num_edges) if num_edges > 0 else torch.tensor([])
-
-                    try:
-                        schema = param_schema[:latent_sample.shape[0]] if param_schema else []
-                        if len(schema) < latent_sample.shape[0]:
-                            for i in range(len(schema), latent_sample.shape[0]):
-                                schema.append(NodeDescriptor(f"token_{i}", "word"))
-
-                        graph = create_graph(
-                            latent_points=latent_sample,
-                            edge_index=edge_index_sample,
-                            edge_attr=edge_attr_sample,
-                            parameters={"epoch": epoch + 1, "name": name},
-                            param_schema=schema,
-                            group_marker_map=group_marker_map,
-                            is_visual=is_visual,
-                            visual_save_path=visual_save_path
-                        )
-                    except Exception as e:
-                        print(f"      ⚠️ Graph visualization failed: {e}")
 
         if current_lr < 1e-6:
             print(f"⏹️ Early stopping: learning rate too small ({current_lr:.2e})")
