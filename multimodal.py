@@ -1,3 +1,4 @@
+import random
 from datetime import datetime
 import os
 from dataclasses import dataclass
@@ -26,7 +27,7 @@ print(f"Using device: {device}")
 class Config:
     # Training hyperparameters
     epochs: int = 100                        # Total number of training epochs
-    lr: float = 0.0025                      # Learning rate for optimizer
+    lr: float = 0.001                      # Learning rate for optimizer
     model_save_path: str = "results/models" # Path where trained model will be saved
 
     # Data generation
@@ -119,14 +120,87 @@ class ColorTokenVectorExtractor:
 
         return token_vector_map
 
-    def analyze_color_tokens(self, r: float, g: float, b: float) -> Dict:
+    def create_manual_rgb_tokens(self, r: float, g: float, b: float) -> Dict[str, np.ndarray]:
         """
-        Analyze token vectors for a color question
+        Manually create red255, green64, blue16 style tokens by averaging color name and number vectors
         """
-        question = f"What color is this R{r} G{g} B{b}"
-        token_vectors = self.extract_token_vectors(question)
+        # Get individual component vectors
+        red_text = f"red {int(r)}"
+        green_text = f"green {int(g)}"
+        blue_text = f"blue {int(b)}"
+        base_text = "What color is"
 
-        # Simple color prediction based on RGB values
+        # Extract vectors for each component
+        red_vectors = self.extract_token_vectors(red_text)
+        green_vectors = self.extract_token_vectors(green_text)
+        blue_vectors = self.extract_token_vectors(blue_text)
+        base_vectors = self.extract_token_vectors(base_text)
+
+        # Find the color name and number vectors
+        def find_vectors(vectors_dict, color_name, number):
+            color_vec = None
+            number_vec = None
+
+            for token, vec in vectors_dict.items():
+                clean_token = token.strip().lower()
+                if clean_token == color_name.lower():
+                    color_vec = vec
+                elif clean_token == str(number):
+                    number_vec = vec
+
+            return color_vec, number_vec
+
+        # Get individual component vectors
+        red_color_vec, red_num_vec = find_vectors(red_vectors, 'red', int(r))
+        green_color_vec, green_num_vec = find_vectors(green_vectors, 'green', int(g))
+        blue_color_vec, blue_num_vec = find_vectors(blue_vectors, 'blue', int(b))
+
+        # Create combined tokens
+        combined_tokens = {}
+
+        # Add base question tokens (What, color, is)
+        for token, vec in base_vectors.items():
+            if token.strip().lower() not in ['red', 'green', 'blue']:
+                combined_tokens[token] = vec
+
+        # Average the color name and number vectors to create combined tokens
+        if red_color_vec is not None and red_num_vec is not None:
+            combined_tokens[f'red{int(r)}'] = (red_color_vec + red_num_vec) / 2
+
+        if green_color_vec is not None and green_num_vec is not None:
+            combined_tokens[f'green{int(g)}'] = (green_color_vec + green_num_vec) / 2
+
+        if blue_color_vec is not None and blue_num_vec is not None:
+            combined_tokens[f'blue{int(b)}'] = (blue_color_vec + blue_num_vec) / 2
+
+        return combined_tokens
+
+    def analyze_color_tokens_average(self, r: float, g: float, b: float) -> Dict:
+        """
+        Analyze token vectors for a color question using manual RGB token creation with color names
+        """
+        # Use manual method to create red255, green64, blue16 style tokens
+        token_vectors = self.create_manual_rgb_tokens(r, g, b)
+        predicted_color = self.predict_color_from_rgb(r, g, b)
+
+        question = f"What color is red{int(r)} green{int(g)} blue{int(b)}"
+
+        return {
+            'question': question,
+            'rgb_values': (r, g, b),
+            'predicted_color': predicted_color,
+            'token_vectors': token_vectors,
+            'vector_stats': self.get_vector_statistics(token_vectors)
+        }
+
+    def analyze_color_tokens_template(self, r: int, g: int, b: int) -> Dict:
+        """
+        RECOMMENDED: Use template approach for consistent, learnable patterns
+        """
+        # Use consistent template that creates predictable token patterns
+        question = f"What component is dominating: red={r:.2f}, green={g:.2f}, blue={b:.2f}? One word answer."
+
+        token_vectors = self.extract_token_vectors(question)
         predicted_color = self.predict_color_from_rgb(r, g, b)
 
         return {
@@ -238,7 +312,7 @@ class ColorTokenVectorExtractor:
             print(f"{token:>10} / [{vector_preview}, ..., {vector_end}]")
 
 # Interactive functions
-def quick_color_analysis(extractor, r: float, g: float, b: float):
+def quick_color_analysis(extractor, r: int, g: int, b: int):
     """Quick analysis function for testing different colors"""
     result = extractor.analyze_color_tokens(r, g, b)
     print(f"\n🎨 RGB({r}, {g}, {b}) Analysis:")
@@ -246,7 +320,7 @@ def quick_color_analysis(extractor, r: float, g: float, b: float):
     extractor.print_detailed_vectors(result['token_vectors'], max_dims=5)
     pass
 
-def compare_colors(extractor, colors: List[Tuple[float, float, float]]):
+def compare_colors(extractor, colors: List[Tuple[int, int, int]]):
     """Compare token vectors for different colors"""
     results = []
 
@@ -289,10 +363,45 @@ def create_soft_label(class_name, classes, epsilon=0.1):
     soft_label[class_idx] = 1.0 - epsilon
     return soft_label
 
+
 def multimodal_color_data_generator(n_samples, extractor):
+    """
+    Generate colors with one dominant channel but varied non-dominant values.
+    """
     for _ in range(n_samples):
-        r, g, b = torch.randint(0, 256, (3,)).tolist()
-        result = extractor.analyze_color_tokens(r, g, b)
+        # Choose which channel will be dominant
+        dominant_channel = random.choice([0, 1, 2])
+
+        # Generate varied ranges for non-dominant channels
+        # Instead of always 0-80, use different ranges for variety
+        low_range_options = [
+            (0, 40),  # Very low
+            (20, 60),  # Medium-low
+            (0, 80),  # Original range
+            (10, 50),  # Low-medium
+            (30, 70),  # Medium (for subtle dominance)
+        ]
+
+        # Pick ranges for the two non-dominant channels
+        range1 = random.choice(low_range_options)
+        range2 = random.choice(low_range_options)
+
+        # Generate base values for all channels
+        r = random.randint(*range1)
+        g = random.randint(*range2)
+        b = random.randint(*range1)  # Reuse range1 or could use another range
+
+        # Set the dominant channel to high value (75-100 for clear dominance)
+        dominant_value = random.randint(75, 100)
+
+        if dominant_channel == 0:
+            r = dominant_value
+        elif dominant_channel == 1:
+            g = dominant_value
+        else:
+            b = dominant_value
+
+        result = extractor.analyze_color_tokens_average(r, g, b)
         yield {
             'token_vectors': result['token_vectors'],
             'gpt_color_label': result['predicted_color'],
@@ -300,27 +409,46 @@ def multimodal_color_data_generator(n_samples, extractor):
             'tokens': list(result['token_vectors'].keys())
         }
 
+
+class TokenizedDataset(torch.utils.data.Dataset):
+    """Custom dataset that preserves token information with data"""
+
+    def __init__(self, data_tensor, label_tensor, tokens_list, rgb_list):
+        self.data = data_tensor
+        self.labels = label_tensor
+        self.tokens = tokens_list
+        self.rgb = rgb_list
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        return self.data[idx], self.labels[idx], self.tokens[idx], self.rgb[idx]
+
 def generate_color_token_dataloader(
-    extractor,
-    num_samples=1024,
-    batch_size=64,
-    classes=None,
-    epsilon=0.1,
-    device='cpu'
+        extractor,
+        num_samples=1024,
+        batch_size=64,
+        classes=None,
+        epsilon=0.1,
+        device='cpu',
+        validation_split=0.2
 ):
     if classes is None:
         raise ValueError("Argument `classes` must be provided.")
 
-    observations, labels, tokens_all = [], [], []
+    observations, labels, tokens_all, rgb_values = [], [], [], []
 
     for data in multimodal_color_data_generator(num_samples, extractor):
         token_vecs = list(data["token_vectors"].values())
         label = data["gpt_color_label"]
         tokens = data["tokens"]
+        rgb = data["rgb"]
 
         observations.append(torch.tensor(token_vecs, dtype=torch.float32))
         labels.append(create_soft_label(label, classes, epsilon))
         tokens_all.append(tokens)
+        rgb_values.append(rgb)
 
     max_len = max(obs.shape[0] for obs in observations)
     vector_dim = observations[0].shape[1]
@@ -336,21 +464,54 @@ def generate_color_token_dataloader(
     data_tensor = torch.stack(padded_observations).to(device)
     label_tensor = torch.stack(labels).to(device)
 
-    dataset = TensorDataset(data_tensor, label_tensor)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    # Split into train and validation sets
+    total_samples = len(data_tensor)
+    val_size = int(total_samples * validation_split)
+    train_size = total_samples - val_size
 
-    return dataloader, tokens_all
+    # Create random indices for splitting
+    indices = torch.randperm(total_samples)
+    train_indices = indices[:train_size]
+    val_indices = indices[train_size:]
+
+    # Split data
+    train_data = data_tensor[train_indices]
+    train_labels = label_tensor[train_indices]
+    train_tokens = [tokens_all[i] for i in train_indices]
+    train_rgb = [rgb_values[i] for i in train_indices]
+
+    val_data = data_tensor[val_indices]
+    val_labels = label_tensor[val_indices]
+    val_tokens = [tokens_all[i] for i in val_indices]
+    val_rgb = [rgb_values[i] for i in val_indices]
+
+    # Create custom datasets that preserve token information
+    train_dataset = TokenizedDataset(train_data, train_labels, train_tokens, train_rgb)
+    val_dataset = TokenizedDataset(val_data, val_labels, val_tokens, val_rgb)
+
+    # Custom collate function to handle the extra token and RGB data
+    def custom_collate_fn(batch):
+        data_batch = torch.stack([item[0] for item in batch])
+        labels_batch = torch.stack([item[1] for item in batch])
+        tokens_batch = [item[2] for item in batch]
+        rgb_batch = [item[3] for item in batch]
+        return data_batch, labels_batch, tokens_batch, rgb_batch
+
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=custom_collate_fn)
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=custom_collate_fn)
+
+    return train_dataloader, val_dataloader
 
 
 def train_model(
         model,
-        dataloader,
+        train_dataloader,
+        val_dataloader,
         name: str,
         epochs: int,
         lr: float,
         factor: float,
         patience: int,
-        param_schema: list[NodeDescriptor],
         model_save_path: str = "results/models",
         model_filename: str = "model.pth",
         is_visual: bool = False,
@@ -368,6 +529,11 @@ def train_model(
     print(f"🎯 Starting training for {epochs} epochs...")
     print(f"   Model parameters: {sum(p.numel() for p in model.parameters()):,}")
     print(f"   Optimizer: Adam (lr={lr})")
+    print(f"   Training samples: {len(train_dataloader.dataset)}")
+    print(f"   Validation samples: {len(val_dataloader.dataset)}")
+
+    # Create validation iterator once to avoid same batch issue
+    val_iterator = iter(val_dataloader)
 
     for epoch in range(epochs):
         model.train()
@@ -375,7 +541,7 @@ def train_model(
         total_kl_loss = 0.0
         total_reg_loss = 0.0
 
-        for batch_idx, (batch_data, soft_labels) in enumerate(dataloader):
+        for batch_idx, (batch_data, soft_labels, batch_tokens, batch_rgb) in enumerate(train_dataloader):
             batch_data = batch_data.to(device)
             soft_labels = soft_labels.to(device)
 
@@ -416,9 +582,9 @@ def train_model(
             total_kl_loss += avg_kl_loss.item()
             total_reg_loss += avg_recon_loss.item()
 
-        avg_loss = epoch_loss / len(dataloader)
-        avg_kl = total_kl_loss / len(dataloader)
-        avg_recon = total_reg_loss / len(dataloader)
+        avg_loss = epoch_loss / len(train_dataloader)
+        avg_kl = total_kl_loss / len(train_dataloader)
+        avg_recon = total_reg_loss / len(train_dataloader)
 
         print(f'Epoch [{epoch + 1}/{epochs}]')
         print(f'  Total Loss: {avg_loss:.6f} | KL Loss: {avg_kl:.6f} | Reg Loss: {avg_recon:.6f}')
@@ -440,7 +606,14 @@ def train_model(
             model.eval()
 
             with torch.no_grad():
-                test_batch, test_labels = next(iter(dataloader))
+                # Get a fresh batch from validation set with tokens and RGB
+                try:
+                    test_batch, test_labels, test_tokens, test_rgb = next(val_iterator)
+                except StopIteration:
+                    # If we've exhausted the validation iterator, create a new one
+                    val_iterator = iter(val_dataloader)
+                    test_batch, test_labels, test_tokens, test_rgb = next(val_iterator)
+
                 test_batch = test_batch.to(device)
                 test_labels = test_labels.to(device)
 
@@ -468,7 +641,14 @@ def train_model(
                     total_predictions += 1
 
                     status = "✅" if is_correct else "❌"
-                    print(f'    Sample {i + 1}: {status} GPT="{gpt_pred}" | GAE="{gae_pred}" (conf={confidence:.3f})')
+
+                    # Display actual RGB values and tokens for this sample
+                    r, g, b = test_rgb[i]
+                    current_tokens = test_tokens[i]
+                    print(
+                        f'    Sample {i + 1}: {status} RGB({r},{g},{b}) GPT="{gpt_pred}" | GAE="{gae_pred}" (conf={confidence:.3f})')
+                    print(f'      Tokens: {current_tokens[:5]}...' if len(
+                        current_tokens) > 5 else f'      Tokens: {current_tokens}')
 
                     # Show GPT soft labels for comparison
                     gpt_soft_probs = test_labels[i].cpu().numpy()
@@ -487,21 +667,34 @@ def train_model(
                         edge_attr_sample = torch.ones(num_edges) if num_edges > 0 else torch.tensor([])
 
                         try:
-                            schema = param_schema[:latent_sample.shape[0]] if param_schema else []
-                            if len(schema) < latent_sample.shape[0]:
-                                for i in range(len(schema), latent_sample.shape[0]):
-                                    schema.append(NodeDescriptor(f"token_{i}", "word"))
+                            # Use the actual tokens from this specific sample
+                            param_schema = create_param_schema_from_tokens(current_tokens, "word")
+
+                            # Ensure schema matches latent dimensions
+                            if len(param_schema) > latent_sample.shape[0]:
+                                param_schema = param_schema[:latent_sample.shape[0]]
+                            elif len(param_schema) < latent_sample.shape[0]:
+                                for j in range(len(param_schema), latent_sample.shape[0]):
+                                    param_schema.append(NodeDescriptor(f"pad_{j}", "word"))
+
+                            graph_title = f"RGB({r},{g},{b}) GPT={gpt_pred} | GAE={gae_pred}"
 
                             graph = create_graph(
                                 latent_points=latent_sample,
                                 edge_index=edge_index_sample,
                                 edge_attr=edge_attr_sample,
-                                parameters={"epoch": epoch + 1, "name": f"{name}-{'success' if is_correct else 'failed'}", "title": f"GPT={gpt_pred} | GAE={gae_pred}"},
-                                param_schema=schema,
+                                parameters={
+                                    "epoch": epoch + 1,
+                                    "name": f"{name}-{'success' if is_correct else 'failed'}",
+                                    "title": graph_title
+                                },
+                                param_schema=param_schema,
                                 group_marker_map=group_marker_map,
                                 is_visual=is_visual,
                                 visual_save_path=visual_save_path
                             )
+                            print(
+                                f'      Graph created with {len(param_schema)} nodes: {[node.name for node in param_schema]}')
                         except Exception as e:
                             print(f"⚠️ Graph visualization failed: {e}")
 
@@ -511,7 +704,7 @@ def train_model(
             model.train()
 
         if current_lr < 1e-6:
-            print(f"⏹️ Early stopping: learning rate too small ({current_lr:.2e})")
+            print(f"ℹ️ Early stopping: learning rate too small ({current_lr:.2e})")
             break
 
     # Save the trained model
@@ -531,7 +724,7 @@ def train_model(
     }, f"{model_save_path}/{model_filename}")
 
     print(f"\n✅ Training completed!")
-    print(f"📁 Model saved to {model_save_path}/{model_filename}")
+    print(f"💾 Model saved to {model_save_path}/{model_filename}")
     if 'accuracy' in locals():
         print(f"🎯 Final accuracy: {accuracy:.1%}")
 
@@ -556,13 +749,14 @@ def main():
         graph_fn=algorithms["delaunay"]
     )
 
-    dataloader, tokens_all = generate_color_token_dataloader(
+    train_dataloader, val_dataloader = generate_color_token_dataloader(
         extractor=extractor,
         num_samples=config.num_samples,
         batch_size=config.batch_size,
         classes=classes,
         epsilon=0.1,
-        device='cuda' if torch.cuda.is_available() else 'cpu'
+        device='cuda' if torch.cuda.is_available() else 'cpu',
+        validation_split=0.2
     )
 
     # Create a timestamped model filename
@@ -571,13 +765,13 @@ def main():
 
     train_model(
         model=model,
-        dataloader=dataloader,
+        train_dataloader=train_dataloader,
+        val_dataloader=val_dataloader,
         name="gae-kl-train",
         epochs=config.epochs,                         # config.epochs
         lr=config.lr,                         # config.lr
         factor=config.factor,                        # config.factor
         patience=config.patience,                        # config.patience
-        param_schema = create_param_schema_from_tokens(tokens_all[0]),
         model_save_path=config.model_save_path,
         model_filename=model_filename,
         is_visual=config.visualise,
