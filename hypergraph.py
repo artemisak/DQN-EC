@@ -85,8 +85,8 @@ class Hypergraph:
     @classmethod
     def build_strict(
         cls,
-        components_pts: List[np.ndarray],
-        edges_per_component: List[Iterable[Tuple[int, int]]],
+        coordinates: List[np.ndarray],
+        edges: List[Iterable[Tuple[int, int]]],
         s: int,
         hub_component: int = 0,
     ) -> Hypergraph:
@@ -111,11 +111,11 @@ class Hypergraph:
         """
         if s < 2:
             raise ValueError("s must be ≥ 2 to allow bridging hyperedges")
-        if len(components_pts) != len(edges_per_component):
+        if len(coordinates) != len(edges):
             raise ValueError("components_pts and edges must have same length")
 
         # Process components and build metadata
-        metadata = cls._prepare_metadata(components_pts, edges_per_component)
+        metadata = cls._prepare_metadata(coordinates, edges)
         m = metadata["m"]
 
         # Build hyperedges
@@ -150,8 +150,8 @@ class Hypergraph:
     @classmethod
     def build_relaxed(
         cls,
-        components_pts: List[np.ndarray],
-        edges_per_component: List[Iterable[Tuple[int, int]]],
+        coordinates: List[np.ndarray],
+        edges: List[Iterable[Tuple[int, int]]],
         s: int,
         rho: Optional[float] = None,
         feasible_override: Optional[np.ndarray] = None,
@@ -190,7 +190,7 @@ class Hypergraph:
             raise ValueError("s must be ≥ 2 to allow bridging hyperedges")
 
         # Prepare metadata
-        metadata = cls._prepare_metadata(components_pts, edges_per_component)
+        metadata = cls._prepare_metadata(coordinates, edges)
         m = metadata["m"]
 
         # Build feasibility matrix
@@ -975,7 +975,7 @@ def demo():
     print("=" * 60)
 
     # Generate demo data with random 2D distribution
-    components, edges = generate_demo_components(
+    coordinates, edges = generate_demo_components(
         n_components=5,
         n_per_component=15,
         cluster_radius=6.0,
@@ -986,8 +986,8 @@ def demo():
     # Build strict hypergraph
     print("\n1. Building STRICT hypergraph (star batching)...")
     hg_strict = Hypergraph.build_strict(
-        components_pts=components,
-        edges_per_component=edges,
+        coordinates=coordinates,
+        edges=edges,
         s=3,
         hub_component=0
     )
@@ -995,14 +995,13 @@ def demo():
     checks_strict = hg_strict.check_properties()
     print(f"   Bridging hyperedges used: {checks_strict['used_bridging']}")
     print(f"   Theoretical bounds: [{checks_strict['lower_bound']}, {checks_strict['upper_bound']}]")
-    print(f"   Optimal: {checks_strict['optimal_ok']}")
-    print(f"   All properties satisfied: {checks_strict['strict_ok'] and checks_strict['connected_ok']}")
+    print(f"   Connected: {checks_strict['connected_ok']}")
 
     # Build relaxed hypergraph (fully connected)
     print("\n2. Building RELAXED hypergraph (no constraints)...")
     hg_relaxed_full = Hypergraph.build_relaxed(
-        components_pts=components,
-        edges_per_component=edges,
+        coordinates=coordinates,
+        edges=edges,
         s=3,
         rho=None
     )
@@ -1015,8 +1014,8 @@ def demo():
     # Build relaxed hypergraph (with radius constraint)
     print("\n3. Building RELAXED hypergraph (radius constraint ρ=0.5)...")
     hg_relaxed_radius = Hypergraph.build_relaxed(
-        components_pts=components,
-        edges_per_component=edges,
+        coordinates=coordinates,
+        edges=edges,
         s=4,
         rho=0.5,
         force_connect=True
@@ -1024,6 +1023,7 @@ def demo():
 
     checks_radius = hg_relaxed_radius.check_properties()
     print(f"   Bridging hyperedges used: {checks_radius['used_bridging']}")
+    print(f"   Theoretical bounds: [{checks_relaxed['lower_bound']}, {checks_relaxed['upper_bound']}]")
     print(f"   Connected: {checks_radius['connected_ok']}")
 
     # Visualize
@@ -1046,7 +1046,7 @@ def demo():
     print("   Saved: hypergraph_strict.png, hypergraph_relaxed_full.png, hypergraph_relaxed_radius.png")
 
     print("\n" + "=" * 60)
-    print("Demo complete!")
+    print("Complete!")
     print("=" * 60)
 
 
