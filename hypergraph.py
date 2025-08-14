@@ -7,25 +7,13 @@ from __future__ import annotations
 import itertools as it
 import math
 import os
-from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Optional, Set, Tuple, Union
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
 
-# Optional PyTorch/PyG imports - gracefully handle if not available
-try:
-    import torch
-    from torch import Tensor
-    from torch_geometric.data import Data, HeteroData
-
-    TORCH_AVAILABLE = True
-except ImportError:
-    torch = None
-    Tensor = None
-    Data = None
-    HeteroData = None
-    TORCH_AVAILABLE = False
+import torch
+from torch_geometric.data import Data
 
 
 class Hypergraph:
@@ -419,51 +407,6 @@ class Hypergraph:
 
     # ========================= PyG Integration =========================
 
-    def to_pyg_hetero(self) -> HeteroData:
-        """
-        Convert to PyG HeteroData representing the incidence bipartite graph.
-
-        Returns
-        -------
-        HeteroData
-            Bipartite graph with node types "node" and "hyperedge"
-        """
-        if not TORCH_AVAILABLE:
-            raise RuntimeError("PyTorch Geometric not available")
-
-        H = HeteroData()
-        meta = self.metadata
-        N = len(self.vertices)
-        M = len(self.hyperedges)
-
-        # Node features
-        H["node"].num_nodes = N
-        if "P_all" in meta:
-            H["node"].pos = torch.tensor(meta["P_all"], dtype=torch.float32)
-        if "comp_of" in meta:
-            H["node"].comp = torch.tensor(meta["comp_of"], dtype=torch.long)
-
-        # Hyperedge features
-        H["hyperedge"].num_nodes = M
-        he_order = [len(he) for he in self.hyperedges]
-        H["hyperedge"].order = torch.tensor(he_order, dtype=torch.long)
-
-        # Build incidence edges
-        src_nodes, dst_hes = [], []
-        for he_id, he in enumerate(self.hyperedges):
-            for v in he:
-                src_nodes.append(v)
-                dst_hes.append(he_id)
-
-        if src_nodes:
-            inc_index = torch.tensor(
-                np.vstack([src_nodes, dst_hes]), dtype=torch.long
-            )
-            H[("node", "in", "hyperedge")].edge_index = inc_index
-            H[("hyperedge", "contains", "node")].edge_index = inc_index.flip(0)
-
-        return H
-
     def to_pyg_data(self) -> Data:
         """
         Convert to PyG Data representing the 2-section graph.
@@ -473,8 +416,6 @@ class Hypergraph:
         Data
             Standard PyG graph with positions and component labels
         """
-        if not TORCH_AVAILABLE:
-            raise RuntimeError("PyTorch Geometric not available")
 
         meta = self.metadata
         E2 = sorted(list(self.two_section()))
@@ -954,7 +895,7 @@ def demo():
         n_per_component=15,
         cluster_radius=6.0,
         blob_std=0.4,
-        seed=42
+        seed=None
     )
 
     # Build strict hypergraph
@@ -963,7 +904,7 @@ def demo():
         coordinates=coordinates,
         edges=edges,
         s=3,
-        hub_component=0
+        hub_component=1
     )
 
     checks_strict = hg_strict.check_properties()
