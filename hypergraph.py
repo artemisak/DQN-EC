@@ -1,27 +1,5 @@
 """
-Unified Hypergraph Construction Framework with PyTorch Geometric Support
-
-A clean, elegant implementation for building strict and relaxed bridging hypergraphs
-with comprehensive analysis, visualization, and PyG integration capabilities.
-
-Quick Usage:
------------
-    # Generate demo components
-    components, edges = generate_demo_components(n_components=5)
-    
-    # Build strict hypergraph (star batching)
-    hg_strict = Hypergraph.build_strict(components, edges, s=3)
-    
-    # Build relaxed hypergraph (with constraints)
-    hg_relaxed = Hypergraph.build_relaxed(components, edges, s=3, rho=2.0)
-    
-    # Analyze and visualize
-    checks = hg_strict.check_properties()
-    hg_strict.plot(title="My Hypergraph")
-    
-    # Convert to PyTorch Geometric (if available)
-    hetero_data = hg_strict.to_pyg_hetero()
-    data = hg_strict.to_pyg_data()
+Hypergraph Construction Framework
 """
 
 from __future__ import annotations
@@ -52,11 +30,7 @@ except ImportError:
 
 class Hypergraph:
     """
-    Unified hypergraph builder with strict and relaxed bridging algorithms.
-
-    This class provides a comprehensive framework for constructing hypergraphs
-    from multi-component graphs, with support for both strict bridging (star
-    batching) and relaxed bridging (Algorithm-1 style with feasibility constraints).
+    Hypergraph builder with both strict and relaxed bridging algorithms.
 
     Attributes
     ----------
