@@ -1,14 +1,5 @@
 """
-PyTorch Geometric Hypergraph Construction Framework
-Builds hypergraphs from multiple PyG Data objects representing components
-
-Requirements:
-    - torch
-    - torch_geometric
-    - numpy
-    - matplotlib
-    - scipy
-    - networkx
+Hypergraph Construction Framework
 """
 
 from __future__ import annotations
