@@ -160,6 +160,6 @@ if __name__ == "__main__":
                                    graph_fn=create_delaunay_graph).to(device),
                   generator=generator, epochs=30, lr=0.0025)
 
-    torch.save(model.state_dict(), "model.pt")
+    torch.save(model.state_dict(), "listener_gae.pt")
 
     print('Done!')
