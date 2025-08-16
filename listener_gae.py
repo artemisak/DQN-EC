@@ -49,11 +49,9 @@ class GraphAutoEncoder(nn.Module):
             nn.init.zeros_(m.bias)
 
     def forward(self, batch):
+        graphs = []
         reconstructed_labels = []
         reconstructed_values = []
-        latent_list = []
-        edge_index_list = []
-        edge_attr_list = []
 
         for _, obs in enumerate(batch):
 
@@ -62,41 +60,34 @@ class GraphAutoEncoder(nn.Module):
             edge_index, edge_attr = self.graph_fn(latent[:, :2])
 
             graph = Data(x=latent[:, 2].reshape(-1, 1), edge_index=edge_index, edge_attr=edge_attr, pos=latent[:, :2])
+            graphs.append(graph)
 
             x1 = F.relu(self.gcn1(graph.x, graph.edge_index, edge_attr=graph.edge_attr))
             x2 = F.relu(self.gcn2(x1, graph.edge_index, edge_attr=graph.edge_attr))
 
             x3 = F.relu(self.gcn3(x2, graph.edge_index) + self.alpha * self.skip_connection(latent))
             logits = self.label_head(x3)
+            reconstructed_labels.append(logits)
 
             x4 = F.relu(self.gcn4(x2, graph.edge_index) + self.alpha * self.skip_connection(latent))
             values = self.value_head(x4)
-
-            reconstructed_labels.append(logits)
             reconstructed_values.append(values)
-            latent_list.append(latent)
-            edge_index_list.append(edge_index)
-            edge_attr_list.append(edge_attr)
 
-        return (batch[:, :, :4], batch[:, :, 4].reshape(64, 12, 1),
-                torch.stack(reconstructed_labels), torch.stack(reconstructed_values),
-                torch.stack(latent_list), edge_index_list, edge_attr_list)
+        return (torch.stack(reconstructed_labels),
+                torch.stack(reconstructed_values),
+                graphs)
 
-def reconstruction_loss(true_distribution, predicted_logits, true_values, predicted_values, epoch,
-                        total_epochs):
-    labels_kl = F.kl_div(F.log_softmax(predicted_logits, dim=-1), F.softmax(true_distribution, dim=-1),
+def reconstruction_loss(true_distribution, predicted_logits, true_values, predicted_values, w1, w2):
+    labels_kl = F.kl_div(F.log_softmax(predicted_logits, dim=-1),
+                         F.softmax(true_distribution, dim=-1),
                          reduction='batchmean')
-    values_mse = F.l1_loss(predicted_values, true_values)
+    values_mae = F.l1_loss(predicted_values.squeeze(-1), true_values)
 
-    progress = epoch / total_epochs
-    weight1 = 1.0 - 0.9 * progress
-    weight2 = 0.1 + 0.9 * progress
-
-    first_term = weight1 * labels_kl
-    second_term = weight2 * values_mse
+    first_term = w1 * labels_kl
+    second_term = w2 * values_mae
     total = first_term + second_term
 
-    return first_term, second_term, total, labels_kl, values_mse
+    return first_term, second_term, total
 
 def regularization_loss(edge_attr_list):
     return torch.norm(torch.cat(edge_attr_list), p=1)
@@ -122,14 +113,19 @@ def train(model, generator, epochs, lr):
 
         for batch_idx, (batch,) in enumerate(generator.loader):
 
-            true_distribution, true_values, predicted_logits, predicted_values, latent_batch, edge_index_list, edge_attr_list = model(
-                generator.listener[batch[0]])
+            predicted_logits, predicted_values, graphs = model(generator.listener[batch])
 
-            first_term, second_term, recon_loss, _, _ = reconstruction_loss(
-                true_distribution, predicted_logits, true_values, predicted_values, epoch, epochs
+            progress = epoch / epochs
+            w1 = 1.0 - 0.9 * progress
+            w2 = 0.1 + 0.9 * progress
+
+            first_term, second_term, recon_loss = reconstruction_loss(
+                generator.listener[batch][:, :, :4], predicted_logits,
+                generator.listener[batch][:, :, 4], predicted_values,
+                w1, w2
             )
 
-            graph_loss_val = 1e-6 * regularization_loss(edge_attr_list)
+            graph_loss_val = 1e-6 * regularization_loss([graph.edge_attr for graph in graphs])
             total_loss = recon_loss + graph_loss_val
 
             epoch_metrics['first_term'].append(first_term.item())
@@ -163,5 +159,7 @@ if __name__ == "__main__":
                                    hidden_dim=128,
                                    graph_fn=create_delaunay_graph).to(device),
                   generator=generator, epochs=30, lr=0.0025)
+
+    torch.save(model.state_dict(), "model.pt")
 
     print('Done!')
