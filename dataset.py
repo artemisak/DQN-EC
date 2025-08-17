@@ -73,7 +73,7 @@ class SyntheticData:
 
             self.messages = torch.stack(self.messages)
             self.listener = torch.stack(self.listener)
-            self.speaker = self._pad_speaker_embeddings(self.speaker)
+            self.speaker = torch.stack(self.speaker)
 
             self.save()
 
@@ -121,25 +121,6 @@ class SyntheticData:
 
         return speaker_obs
 
-    def _pad_speaker_embeddings(self, speaker_list):
-        if not speaker_list:
-            return torch.empty(0)
-
-        max_len = max(emb.shape[0] for emb in speaker_list)
-        embed_dim = speaker_list[0].shape[1]
-
-        padded_speakers = []
-        for embeddings in speaker_list:
-            pad_len = max_len - embeddings.shape[0]
-            if pad_len > 0:
-                padding = torch.zeros((pad_len, embed_dim))
-                padded_embeddings = torch.cat([embeddings, padding], dim=0)
-            else:
-                padded_embeddings = embeddings
-            padded_speakers.append(padded_embeddings)
-
-        return torch.stack(padded_speakers)
-
     def save(self):
         """Saves the generated data to a file."""
         os.makedirs(os.path.dirname(self.data_path), exist_ok=True)
@@ -156,10 +137,3 @@ class SyntheticData:
         self.listener = data['listener']
         self.speaker = data['speaker']
         self.messages = data['messages']
-
-def main():
-    generator = SyntheticData()
-    print(generator.speaker[0])
-
-if __name__ == "__main__":
-    main()

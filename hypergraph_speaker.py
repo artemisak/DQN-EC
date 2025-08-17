@@ -25,6 +25,16 @@ def save_hypergraph(hg, path):
     torch.save(hg, path)
     print(f"Hypergraph saved to {path}")
 
+def load_hypergraph(path):
+    """Loads a hypergraph object from a file."""
+    if os.path.exists(path):
+        hg = torch.load(path)
+        print(f"Hypergraph loaded from {path}")
+        return hg
+    else:
+        print(f"File not found: {path}")
+        return None
+
 if __name__ == "__main__":
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
