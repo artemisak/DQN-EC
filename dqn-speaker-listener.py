@@ -85,7 +85,7 @@ class Args:
     """the frequency of training"""
 
 
-# Improved QNetwork for the speaker agent
+# QNetwork for the speaker agent
 # Speaker observation space: [goal_id]
 # Speaker action space: [say_0, say_1, ..., say_9]
 class SpeakerQNetwork(nn.Module):
@@ -119,7 +119,7 @@ class SpeakerQNetwork(nn.Module):
         return self.action_head(features)
 
 
-# Improved QNetwork for the listener agent
+# QNetwork for the listener agent
 # Listener observation space: [self_vel, all_landmark_rel_positions, communication]
 # Listener action space: [no_action, move_left, move_right, move_down, move_up]
 class ListenerQNetwork(nn.Module):
