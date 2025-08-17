@@ -26,8 +26,6 @@ class ColorTokenVectorExtractor:
         self.model.to(device)
         self.model.eval()  # Set to evaluation mode
 
-        print(f"Loaded model: {model_name}")
-
     def extract_token_vectors(self, text: str, layer_idx: int = -1) -> Dict[str, np.ndarray]:
         """
         Extract token vectors from the model for a given text

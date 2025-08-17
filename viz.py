@@ -53,24 +53,13 @@ if __name__ == "__main__":
 
     pos = {i: (float(pos_tensor[i, 0]), float(pos_tensor[i, 1])) for i in range(num_nodes)}
 
-    if edge_attr is not None:
-        ea = edge_attr.numpy()
-        w_min, w_max = float(ea.min()), float(ea.max())
-        if w_max > w_min:
-            widths = 1.0 + 3.0 * (ea - w_min) / (w_max - w_min)
-        else:
-            widths = [2.0] * len(ea)
-    else:
-        widths = 1.5
+    widths = [G[u][v]['weight'] for u, v in G.edges()]
 
     plt.figure(figsize=(6, 6))
     nx.draw(
         G,
         pos=pos,
-        with_labels=False,
-        node_size=50,
         width=widths
     )
     plt.title("Sampled Graph")
-    plt.tight_layout()
     plt.show()

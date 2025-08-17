@@ -181,5 +181,3 @@ resources/
 
 .idea/
 .DS_Store
-
-*.pth
