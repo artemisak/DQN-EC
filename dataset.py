@@ -1,10 +1,14 @@
+import numpy as np
 from pettingzoo.mpe import simple_speaker_listener_v4
 import torch
+from scipy.stats import spearmanr
+
 from suppelemtary import ColorTokenVectorExtractor
+from multimodal import ColorTokenVectorExtractor
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-FORWARD_MAPPING = {
+LISTENER_FORWARD_MAPPING = {
     1: [0, 0, 0, 0],
     2: [0, 0, 0, 1],
     3: [0, 0, 1, 1],
@@ -15,7 +19,7 @@ FORWARD_MAPPING = {
     8: [0, 1, 0, 0],
 }
 
-BACKWARD_MAPPING = {
+LISTENER_BACKWARD_MAPPING = {
     (0, 0, 0, 0): 1,
     (0, 0, 0, 1): 2,
     (0, 0, 1, 1): 3,
@@ -24,6 +28,24 @@ BACKWARD_MAPPING = {
     (0, 1, 1, 1): 6,
     (0, 1, 0, 1): 7,
     (0, 1, 0, 0): 8,
+}
+
+SPEAKER_FORWARD_MAPPING = {
+    1: [0, 0, 0, 0],
+    2: [0, 0, 0, 1],
+    3: [0, 0, 1, 1],
+    4: [0, 0, 1, 0],
+    5: [0, 1, 1, 0],
+    6: [0, 1, 1, 1],
+}
+
+SPEAKER_BACKWARD_MAPPING = {
+    (0, 0, 0, 0): 1,
+    (0, 0, 0, 1): 2,
+    (0, 0, 1, 1): 3,
+    (0, 0, 1, 0): 4,
+    (0, 1, 1, 0): 5,
+    (0, 1, 1, 1): 6,
 }
 
 class SyntheticData:
@@ -62,14 +84,25 @@ class SyntheticData:
 
     def prepare_listener(self, listener_msg):
         listener_obs = torch.zeros(len(listener_msg), 5)
-        listener_obs[:, :4] = torch.tensor(list(FORWARD_MAPPING.values())[:len(listener_msg)])
+        listener_obs[:, :4] = torch.tensor(list(LISTENER_FORWARD_MAPPING.values())[:len(listener_msg)])
         listener_obs[0:len(listener_msg), 4] = torch.tensor(listener_msg)
         return listener_obs
 
     def prepare_speaker(self, speaker_msg):
         r, g, b = speaker_msg[0], speaker_msg[1], speaker_msg[2]
-        embeddings = self.extractor.process_rgb_to_embeddings(r, g, b)
-        return embeddings
+        result = self.extractor.analyze_color_tokens_average(r, g, b)
+
+        token_vectors = result['token_vectors']  # A dict: token -> numpy array
+        num_tokens = len(token_vectors)
+        embed_dim = self.extractor.model.config.hidden_size
+        speaker_obs = torch.zeros(num_tokens, 4 + embed_dim)
+        # Convert list of token vectors to a tensor
+        vecs = torch.tensor(np.stack(list(token_vectors.values())), dtype=torch.float32)
+        # Assign forward mapping for first 4 dims
+        speaker_obs[:, :4] = torch.tensor(list(SPEAKER_FORWARD_MAPPING.values())[:num_tokens])
+        # Assign token vectors to remaining dims
+        speaker_obs[:, 4:] = vecs
+        return speaker_obs
 
     def _pad_speaker_embeddings(self, speaker_list):
         if not speaker_list:
