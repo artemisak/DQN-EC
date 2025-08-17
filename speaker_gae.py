@@ -73,7 +73,7 @@ if __name__ == "__main__":
 
     model = train(
         GraphAutoEncoder(
-            input_dim=4+generator.extractor.sp_model.config.hidden_size,
+            input_dim=772,
             output_dim=3,
             hidden_dim=128,
             graph_fn=create_delaunay_graph

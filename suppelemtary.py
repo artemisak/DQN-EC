@@ -117,18 +117,26 @@ class ColorTokenVectorExtractor:
 
         return combined_tokens
 
-    def process_rgb_to_embeddings(self, r: float, g: float, b: float) -> torch.Tensor:
+    def process_rgb_to_embeddings(self, r: float, g: float, b: float) -> dict:
         """
         Main function to convert RGB values to token embeddings following multimodal pipeline
         """
         # Create the manual RGB tokens with averaged embeddings
         token_vectors = self.create_manual_rgb_tokens(r, g, b)
 
-        # Convert to tensor and return
-        if token_vectors:
-            embeddings = list(token_vectors.values())
-            embeddings_array = np.array(embeddings)
-            return torch.tensor(embeddings_array, dtype=torch.float32)
-        else:
-            # Fallback: return empty tensor if no tokens found
-            return torch.zeros((1, self.model.config.hidden_size), dtype=torch.float32)
+        # Create the final structured output
+        output_structure = {
+            'rgb_values': (r, g, b),
+            'token_vectors': {token: vec.tolist() for token, vec in token_vectors.items()},
+        }
+
+        return output_structure
+
+def main():
+    r, g, b = 0.65, 0.15, 0.15
+    extractor = ColorTokenVectorExtractor("distilgpt2")
+    embeddings = extractor.process_rgb_to_embeddings(r, g, b)
+    print(embeddings)
+
+if __name__ == "__main__":
+    main()

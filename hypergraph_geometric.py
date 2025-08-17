@@ -955,7 +955,6 @@ def demo():
     for i, data in enumerate(components):
         print(f"   Component {i}: {data.num_nodes} nodes, {data.num_edges} edges")
 
-    print(components)
     # Build strict hypergraph
     print("\n2. Building STRICT hypergraph...")
     hg_strict = PyGHypergraphBuilder.build_strict(
