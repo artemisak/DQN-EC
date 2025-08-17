@@ -55,7 +55,7 @@ class SyntheticData:
         self.speaker = self._pad_speaker_embeddings(self.speaker)
 
         self.loader = torch.utils.data.DataLoader(
-            torch.utils.data.TensorDataset(torch.tensor(range(len(self.messages))).to(device)),
+            torch.utils.data.TensorDataset(torch.tensor(range(num_samples)).to(device)),
             batch_size=self.batch_size,
             shuffle=True
         )
