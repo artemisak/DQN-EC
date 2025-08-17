@@ -59,7 +59,10 @@ class GraphAutoEncoder(nn.Module):
 
             edge_index, edge_attr = self.graph_fn(latent[:, :2])
 
-            graph = Data(x=latent[:, 2].reshape(-1, 1), edge_index=edge_index, edge_attr=edge_attr, pos=latent[:, :2])
+            graph = Data(x=latent[:, 2].reshape(-1, 1),
+                         edge_index=edge_index,
+                         edge_attr=edge_attr.reshape(-1, 1),
+                         pos=latent[:, :2])
             graphs.append(graph)
 
             x1 = F.relu(self.gcn1(graph.x, graph.edge_index, edge_attr=graph.edge_attr))
