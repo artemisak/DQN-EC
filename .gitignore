@@ -173,11 +173,7 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
-models/
-runs/
 wandb/
-graphs/
-resources/
 
 .idea/
 .DS_Store
