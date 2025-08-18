@@ -13,7 +13,7 @@ import tyro
 from typing import Optional
 from collections import deque, namedtuple
 from pettingzoo.mpe import simple_speaker_listener_v4
-from torch_geometric.nn import GATConv, global_mean_pool
+from torch_geometric.nn import GATv2Conv, global_mean_pool
 from torch_geometric.data import Data, Batch
 
 from modules.encoder import GraphAutoEncoder
@@ -68,7 +68,7 @@ class Args:
     """the user or org name of the model repository from the Hugging Face Hub"""
 
     # Algorithm specific arguments
-    total_timesteps: int = 300000
+    total_timesteps: int = 80000
     """total timesteps of the experiments"""
     learning_rate: float = 1e-3
     """the learning rate of the optimizer"""
@@ -106,19 +106,19 @@ class Args:
 class HypergraphGAT(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim, heads=4, dropout=0.1):
         super().__init__()
-        self.gat1 = GATConv(input_dim, hidden_dim, heads=heads, dropout=dropout)
-        self.gat2 = GATConv(hidden_dim * heads, hidden_dim, heads=heads, dropout=dropout)
-        self.gat3 = GATConv(hidden_dim * heads, output_dim, heads=1, concat=False, dropout=dropout)
+        self.gat1 = GATv2Conv(input_dim, hidden_dim, heads=heads, dropout=dropout, edge_dim=1)
+        self.gat2 = GATv2Conv(hidden_dim * heads, hidden_dim, heads=heads, dropout=dropout, edge_dim=1)
+        self.gat3 = GATv2Conv(hidden_dim * heads, output_dim, heads=1, concat=False, dropout=dropout)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, edge_index, edge_attr=None, batch=None):
         # First GAT layer
-        x = self.gat1(x, edge_index)
+        x = self.gat1(x, edge_index, edge_attr)
         x = F.elu(x)
         x = self.dropout(x)
 
         # Second GAT layer
-        x = self.gat2(x, edge_index)
+        x = self.gat2(x, edge_index, edge_attr)
         x = F.elu(x)
         x = self.dropout(x)
 
@@ -141,7 +141,7 @@ class SpeakerGATQNetwork(nn.Module):
 
         # GAT for processing hypergraph
         self.gat = HypergraphGAT(
-            input_dim=1,  # Based on hypergraph structure: x=[n, 1]
+            input_dim=4,
             hidden_dim=gat_hidden_dim,
             output_dim=128,
             heads=gat_heads,
@@ -189,7 +189,7 @@ class ListenerGATQNetwork(nn.Module):
 
         # GAT for processing hypergraph
         self.gat = HypergraphGAT(
-            input_dim=1,  # Based on hypergraph structure: x=[n, 1]
+            input_dim=4,
             hidden_dim=gat_hidden_dim,
             output_dim=128,
             heads=gat_heads,
@@ -240,9 +240,11 @@ def process_observations_to_hypergraph(listener_gae, speaker_gae, observations, 
     with torch.no_grad():
         _, _, graphs = listener_gae(listener_obs)
         ls_graph = shift_graph(graphs[0], x=0, y=0)
+        ls_graph.x = torch.cat([ls_graph.x, ls_graph.pos, torch.ones(ls_graph.num_nodes, 1)], dim=1)
 
         _, _, graphs = speaker_gae(speaker_obs)
         sp_graph = shift_graph(graphs[0], x=0, y=0)
+        sp_graph.x = torch.cat([sp_graph.x, sp_graph.pos, torch.zeros(sp_graph.num_nodes, 1)], dim=1)
 
         hypergraph = prepare_hypergraph([ls_graph, sp_graph])
 
@@ -447,8 +449,8 @@ def main():
             actions[speaker_agent],
             actions[listener_agent],
             next_hypergraph,
-            rewards[speaker_agent],
-            rewards[listener_agent],
+            np.clip(rewards[speaker_agent], -1, 1),
+            np.clip(rewards[listener_agent], -1, 1),
             done
         )
 
@@ -541,9 +543,11 @@ def main():
 
                 # Train speaker agent
                 with torch.no_grad():
-                    next_speaker_q_values = speaker_target_net(next_batch)
-                    next_speaker_q_max = next_speaker_q_values.max(1)[0]
-                    speaker_targets = speaker_rewards + args.gamma * next_speaker_q_max * (1 - dones)
+                    sp_next_online = speaker_q_net(next_batch)  # Q_online(s', ·)
+                    sp_next_act = sp_next_online.argmax(dim=1, keepdim=True)  # a* = argmax_a Q_online
+                    sp_next_target = speaker_target_net(next_batch)  # Q_target(s', ·)
+                    sp_next_q = sp_next_target.gather(1, sp_next_act).squeeze(1)  # Q_target(s', a*)
+                    speaker_targets = speaker_rewards + args.gamma * sp_next_q * (1.0 - dones)
 
                 current_speaker_q_values = speaker_q_net(current_batch)
                 speaker_q_values = current_speaker_q_values.gather(1, speaker_actions).squeeze(1)
@@ -556,9 +560,11 @@ def main():
 
                 # Train listener agent
                 with torch.no_grad():
-                    next_listener_q_values = listener_target_net(next_batch)
-                    next_listener_q_max = next_listener_q_values.max(1)[0]
-                    listener_targets = listener_rewards + args.gamma * next_listener_q_max * (1 - dones)
+                    ls_next_online = listener_q_net(next_batch)
+                    ls_next_act = ls_next_online.argmax(dim=1, keepdim=True)
+                    ls_next_target = listener_target_net(next_batch)
+                    ls_next_q = ls_next_target.gather(1, ls_next_act).squeeze(1)
+                    listener_targets = listener_rewards + args.gamma * ls_next_q * (1.0 - dones)
 
                 current_listener_q_values = listener_q_net(current_batch)
                 listener_q_values = current_listener_q_values.gather(1, listener_actions).squeeze(1)
