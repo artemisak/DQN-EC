@@ -111,10 +111,7 @@ class HypergraphGAT(nn.Module):
         self.gat3 = GATv2Conv(hidden_dim * heads, output_dim, heads=1, concat=True, dropout=dropout)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x, edge_index, edge_attr=None, batch=None):
-
-        if edge_attr is None:
-            edge_attr = x.new_zeros((edge_index.size(1), 1))
+    def forward(self, x, edge_index, edge_attr):
 
         # First GAT layer
         x = self.gat1(x, edge_index, edge_attr)
@@ -130,10 +127,7 @@ class HypergraphGAT(nn.Module):
         x = self.gat3(x, edge_index)
 
         # Global pooling to get graph-level representation
-        if batch is not None:
-            x = global_add_pool(x, batch)
-        else:
-            x = global_add_pool(x, torch.zeros(x.size(0), dtype=torch.long, device=x.device))
+        x = global_add_pool(x, torch.zeros(x.size(0), dtype=torch.long, device=x.device))
 
         return x
 
@@ -162,6 +156,9 @@ class SpeakerGATQNetwork(nn.Module):
             nn.Linear(64, action_dim)
         )
 
+        self.alpha = nn.Parameter(torch.tensor(1.0))
+        self.skip_connection = nn.Linear(14, 128)
+
         self._init_weights()
 
     def _init_weights(self):
@@ -171,19 +168,17 @@ class SpeakerGATQNetwork(nn.Module):
                 nn.init.orthogonal_(layer.weight, gain=np.sqrt(2))
                 nn.init.constant_(layer.bias, 0.0)
 
-    def forward(self, hypergraph_batch):
+    def forward(self, hypergraph):
         # Process hypergraph with GAT
-        batch_vec = getattr(hypergraph_batch, "batch", None)
 
         graph_features = self.gat(
-            hypergraph_batch.x,
-            hypergraph_batch.edge_index,
-            getattr(hypergraph_batch, "edge_attr", None),
-            batch=batch_vec,
+            hypergraph.x,
+            hypergraph.edge_index,
+            hypergraph.edge_attr
         )
 
         # Get Q-values for actions
-        return self.action_head(graph_features)
+        return self.action_head(graph_features * (1 - self.alpha) + self.alpha * self.skip_connection(hypergraph.raw_observations))
 
 
 # QNetwork for the listener agent with GAT
@@ -211,6 +206,9 @@ class ListenerGATQNetwork(nn.Module):
             nn.Linear(128, action_dim)
         )
 
+        self.alpha = nn.Parameter(torch.tensor(1.0))
+        self.skip_connection = nn.Linear(14, 128)
+
         self._init_weights()
 
     def _init_weights(self):
@@ -220,19 +218,17 @@ class ListenerGATQNetwork(nn.Module):
                 nn.init.orthogonal_(layer.weight, gain=np.sqrt(2))
                 nn.init.constant_(layer.bias, 0.0)
 
-    def forward(self, hypergraph_batch):
+    def forward(self, hypergraph):
         # Process hypergraph with GAT
-        batch_vec = getattr(hypergraph_batch, "batch", None)
 
         graph_features = self.gat(
-            hypergraph_batch.x,
-            hypergraph_batch.edge_index,
-            getattr(hypergraph_batch, "edge_attr", None),
-            batch=batch_vec,
+            hypergraph.x,
+            hypergraph.edge_index,
+            hypergraph.edge_attr
         )
 
         # Get Q-values for actions
-        return self.action_head(graph_features)
+        return self.action_head(graph_features * (1 - self.alpha) + self.alpha * self.skip_connection(hypergraph.raw_observations))
 
 
 def process_observations_to_hypergraph(env, listener_gae, speaker_gae, observations, speaker_agent, listener_agent, vectorizer, filter, device):
@@ -245,7 +241,7 @@ def process_observations_to_hypergraph(env, listener_gae, speaker_gae, observati
     speaker_pos = env.unwrapped.world.agents[0].state.p_pos
     listener_pos = env.unwrapped.world.agents[1].state.p_pos
 
-    with torch.no_grad():
+    with (torch.no_grad()):
 
         _, _, graphs = listener_gae(listener_obs)
         ls_graph = shift_graph(graphs[0], x=listener_pos[0], y=listener_pos[1])
@@ -254,6 +250,9 @@ def process_observations_to_hypergraph(env, listener_gae, speaker_gae, observati
         sp_graph = shift_graph(graphs[0], x=speaker_pos[0], y=speaker_pos[1])
 
         hypergraph = prepare_hypergraph([ls_graph, sp_graph])
+        hypergraph.raw_observations = torch.cat(
+            [torch.tensor(observations[listener_agent], dtype=torch.float, device=device),
+             torch.tensor(observations[speaker_agent], dtype=torch.float, device=device)], dim=0).unsqueeze(0)
 
     return hypergraph
 
@@ -410,8 +409,9 @@ def main():
         current_hypergraph_device = Data(
             x=current_hypergraph.x.to(device),
             edge_index=current_hypergraph.edge_index.to(device),
-            edge_attr=current_hypergraph.edge_attr.to(device) if hasattr(current_hypergraph, 'edge_attr') else None,
-            pos=current_hypergraph.pos.to(device) if hasattr(current_hypergraph, 'pos') else None
+            edge_attr=current_hypergraph.edge_attr.to(device),
+            pos=current_hypergraph.pos.to(device),
+            raw_observations=current_hypergraph.raw_observations.to(device)
         )
 
         # Select actions
