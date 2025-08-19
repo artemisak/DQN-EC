@@ -13,10 +13,10 @@ def train(model, generator, epochs, lr):
         labels_kl = F.kl_div(F.log_softmax(predicted_logits, dim=-1),
                              F.softmax(true_distribution, dim=-1),
                              reduction='batchmean')
-        values_mae = F.l1_loss(predicted_values.squeeze(-1), true_values)
+        values_l1 = F.l1_loss(predicted_values, true_values)
 
-        first_term = w1 * labels_kl
-        second_term = w2 * values_mae
+        first_term = w2 * labels_kl
+        second_term = w1 * values_l1
         total = first_term + second_term
 
         return first_term, second_term, total
@@ -51,7 +51,7 @@ def train(model, generator, epochs, lr):
 
             first_term, second_term, recon_loss = reconstruction_loss(
                 generator.speaker[batch][:, :, :4], predicted_logits,
-                generator.speaker[batch][:, :, 4], predicted_values,
+                generator.speaker[batch][:, :, 4:], predicted_values,
                 w1, w2
             )
 
@@ -90,8 +90,10 @@ if __name__ == "__main__":
     generator = SyntheticData()
 
     model = train(GraphAutoEncoder(input_dim=772,
-                                   output_dim=3,
+                                   output_dim=5,
                                    hidden_dim=128,
+                                   label_head=4,
+                                   value_head=768,
                                    graph_fn=create_delaunay_graph).to(device),
                   generator=generator, epochs=30, lr=0.0025)
 

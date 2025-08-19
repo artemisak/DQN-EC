@@ -31,10 +31,11 @@ class SyntheticData:
 
             while env.agents:
                 actions = {agent: env.action_space(agent).sample() for agent in env.agents}
-                msg, *_ = env.step(actions)
-                self.messages.append(torch.tensor([*msg['listener_0'][:8], *msg['speaker_0'][:3]]))
-                self.listener.append(prepare_listener(msg['listener_0'][:8]))
-                self.speaker.append(prepare_speaker(msg['speaker_0'][:3], vectorizer=self.vectorizer, filter=self.filter))
+                obs, *_ = env.step(actions)
+                self.messages.append(torch.tensor([*obs['listener_0'], *obs['speaker_0']]))
+                self.listener.append(prepare_listener(obs['listener_0'], shuffle=True))
+                self.speaker.append(prepare_speaker(obs['speaker_0'], vectorizer=self.vectorizer,
+                                                    filter=self.filter, shuffle=True))
             env.close()
 
             self.messages = torch.stack(self.messages)

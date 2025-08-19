@@ -6,7 +6,7 @@ from torch_geometric.data import Data
 
 class GraphAutoEncoder(nn.Module):
 
-    def __init__(self, input_dim=5, output_dim=3, hidden_dim=128, graph_fn=None):
+    def __init__(self, input_dim=5, output_dim=5, hidden_dim=128, label_head=4, value_head=1, graph_fn=None):
         super(GraphAutoEncoder, self).__init__()
 
         self.graph_fn = graph_fn
@@ -21,14 +21,14 @@ class GraphAutoEncoder(nn.Module):
 
         self.encoder.apply(self.kaiming_init)
 
-        self.gcn1 = GATv2Conv(in_channels=1, out_channels=hidden_dim, edge_dim=1)
+        self.gcn1 = GATv2Conv(in_channels=3, out_channels=hidden_dim, edge_dim=1)
         self.gcn2 = GATv2Conv(in_channels=hidden_dim, out_channels=hidden_dim, edge_dim=1)
 
         self.gcn3 = GATv2Conv(in_channels=hidden_dim, out_channels=hidden_dim)
-        self.label_head = nn.Linear(hidden_dim, 4)
+        self.label_head = nn.Linear(hidden_dim, label_head)
 
         self.gcn4 = GATv2Conv(in_channels=hidden_dim, out_channels=hidden_dim)
-        self.value_head = nn.Linear(hidden_dim, 1)
+        self.value_head = nn.Linear(hidden_dim, value_head)
 
         self.skip_connection = nn.Linear(output_dim, hidden_dim)
 
@@ -50,7 +50,7 @@ class GraphAutoEncoder(nn.Module):
 
             edge_index, edge_attr = self.graph_fn(latent[:, :2])
 
-            graph = Data(x=latent[:, 2].reshape(-1, 1),
+            graph = Data(x=latent[:, 2:],
                          edge_index=edge_index,
                          edge_attr=edge_attr.reshape(-1, 1),
                          pos=latent[:, :2])

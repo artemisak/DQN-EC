@@ -13,7 +13,7 @@ import tyro
 from typing import Optional
 from collections import deque, namedtuple
 from pettingzoo.mpe import simple_speaker_listener_v4
-from torch_geometric.nn import GATv2Conv, global_mean_pool
+from torch_geometric.nn import GATv2Conv, global_add_pool
 from torch_geometric.data import Data, Batch
 
 from modules.encoder import GraphAutoEncoder
@@ -68,7 +68,7 @@ class Args:
     """the user or org name of the model repository from the Hugging Face Hub"""
 
     # Algorithm specific arguments
-    total_timesteps: int = 10000
+    total_timesteps: int = 80000
     """total timesteps of the experiments"""
     learning_rate: float = 5e-4
     """the learning rate of the optimizer"""
@@ -96,7 +96,7 @@ class Args:
     # GAT specific arguments
     gat_hidden_dim: int = 64
     """hidden dimension for GAT layers"""
-    gat_heads: int = 3
+    gat_heads: int = 2
     """number of attention heads in GAT"""
     gat_dropout: float = 0.0
     """dropout rate for GAT layers"""
@@ -104,11 +104,11 @@ class Args:
 
 # Base GAT module for processing hypergraphs
 class HypergraphGAT(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim, heads=4, dropout=0.0):
+    def __init__(self, input_dim, hidden_dim, output_dim, heads=2, dropout=0.1):
         super().__init__()
         self.gat1 = GATv2Conv(input_dim, hidden_dim, heads=heads, dropout=dropout, edge_dim=1)
         self.gat2 = GATv2Conv(hidden_dim * heads, hidden_dim, heads=heads, dropout=dropout, edge_dim=1)
-        self.gat3 = GATv2Conv(hidden_dim * heads, output_dim, heads=1, concat=False, dropout=dropout)
+        self.gat3 = GATv2Conv(hidden_dim * heads, output_dim, heads=1, concat=True, dropout=dropout)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, edge_index, edge_attr=None, batch=None):
@@ -131,21 +131,21 @@ class HypergraphGAT(nn.Module):
 
         # Global pooling to get graph-level representation
         if batch is not None:
-            x = global_mean_pool(x, batch)
+            x = global_add_pool(x, batch)
         else:
-            x = global_mean_pool(x, torch.zeros(x.size(0), dtype=torch.long, device=x.device))
+            x = global_add_pool(x, torch.zeros(x.size(0), dtype=torch.long, device=x.device))
 
         return x
 
 
 # QNetwork for the speaker agent with GAT
 class SpeakerGATQNetwork(nn.Module):
-    def __init__(self, action_dim, gat_hidden_dim=64, gat_heads=4, dropout=0.0):
+    def __init__(self, action_dim, gat_hidden_dim=64, gat_heads=2, dropout=0.1):
         super().__init__()
 
         # GAT for processing hypergraph
         self.gat = HypergraphGAT(
-            input_dim=4,
+            input_dim=3,
             hidden_dim=gat_hidden_dim,
             output_dim=128,
             heads=gat_heads,
@@ -188,12 +188,12 @@ class SpeakerGATQNetwork(nn.Module):
 
 # QNetwork for the listener agent with GAT
 class ListenerGATQNetwork(nn.Module):
-    def __init__(self, action_dim, gat_hidden_dim=64, gat_heads=4, dropout=0.0):
+    def __init__(self, action_dim, gat_hidden_dim=64, gat_heads=2, dropout=0.1):
         super().__init__()
 
         # GAT for processing hypergraph
         self.gat = HypergraphGAT(
-            input_dim=4,
+            input_dim=3,
             hidden_dim=gat_hidden_dim,
             output_dim=128,
             heads=gat_heads,
@@ -244,20 +244,11 @@ def process_observations_to_hypergraph(listener_gae, speaker_gae, observations, 
     with torch.no_grad():
         _, _, graphs = listener_gae(listener_obs)
         ls_graph = shift_graph(graphs[0], x=0, y=0)
-        ls_graph.x = torch.cat([ls_graph.x, ls_graph.pos, torch.ones(ls_graph.num_nodes, 1)], dim=1)
 
         _, _, graphs = speaker_gae(speaker_obs)
         sp_graph = shift_graph(graphs[0], x=0, y=0)
-        sp_graph.x = torch.cat([sp_graph.x, sp_graph.pos, torch.zeros(sp_graph.num_nodes, 1)], dim=1)
 
         hypergraph = prepare_hypergraph([ls_graph, sp_graph])
-
-        x = hypergraph.x
-        x = (x - x.mean(0, keepdim=True)) / (x.std(0, keepdim=True) + 1e-6)
-        hypergraph.x = x
-
-        ea = hypergraph.edge_attr
-        hypergraph.edge_attr = (ea - ea.mean()) / (ea.std() + 1e-6)
 
     return hypergraph
 
@@ -301,8 +292,10 @@ def main():
 
     listener_gae = GraphAutoEncoder(
         input_dim=5,
-        output_dim=3,
+        output_dim=5,
         hidden_dim=128,
+        label_head=4,
+        value_head=1,
         graph_fn=create_delaunay_graph
     ).to(device)
 
@@ -311,8 +304,10 @@ def main():
 
     speaker_gae = GraphAutoEncoder(
         input_dim=772,
-        output_dim=3,
+        output_dim=5,
         hidden_dim=128,
+        label_head=4,
+        value_head=768,
         graph_fn=create_delaunay_graph
     ).to(device)
 

@@ -13,10 +13,10 @@ def train(model, generator, epochs, lr):
         labels_kl = F.kl_div(F.log_softmax(predicted_logits, dim=-1),
                              F.softmax(true_distribution, dim=-1),
                              reduction='batchmean')
-        values_mae = F.l1_loss(predicted_values.squeeze(-1), true_values)
+        values_l1 = F.l1_loss(predicted_values.squeeze(-1), true_values)
 
-        first_term = w1 * labels_kl
-        second_term = w2 * values_mae
+        first_term = w2 * labels_kl
+        second_term = w1 * values_l1
         total = first_term + second_term
 
         return first_term, second_term, total
@@ -68,6 +68,10 @@ def train(model, generator, epochs, lr):
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
 
+        # if epoch in track_epochs:
+        #     print(F.softmax(generator.listener[batch][1, :, :4], dim=-1), F.softmax(predicted_logits[1, :, :], dim=-1))
+        #     print(generator.listener[batch][1, :, 4], predicted_values[1, :, :])
+
         avg_metrics = {k: np.mean(v) for k, v in epoch_metrics.items()}
 
         if epoch + 1 in track_epochs:
@@ -88,8 +92,10 @@ if __name__ == "__main__":
     generator = SyntheticData()
 
     model = train(GraphAutoEncoder(input_dim=5,
-                                   output_dim=3,
+                                   output_dim=5,
                                    hidden_dim=128,
+                                   label_head=4,
+                                   value_head=1,
                                    graph_fn=create_delaunay_graph).to(device),
                   generator=generator, epochs=30, lr=0.0025)
 

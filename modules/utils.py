@@ -26,6 +26,9 @@ LISTENER_FORWARD_MAPPING = {
     6: [0, 1, 1, 1],
     7: [0, 1, 0, 1],
     8: [0, 1, 0, 0],
+    9: [1, 1, 0, 0],
+    10: [1, 1, 0, 1],
+    11: [1, 1, 1, 1]
 }
 
 LISTENER_BACKWARD_MAPPING = {
@@ -37,6 +40,9 @@ LISTENER_BACKWARD_MAPPING = {
     (0, 1, 1, 1): 6,
     (0, 1, 0, 1): 7,
     (0, 1, 0, 0): 8,
+    (1, 1, 0, 0): 9,
+    (1, 1, 0, 1): 10,
+    (1, 1, 1, 1): 11
 }
 
 SPEAKER_FORWARD_MAPPING = {
@@ -51,15 +57,18 @@ SPEAKER_BACKWARD_MAPPING = {
     (0, 0, 1, 1): 3,
 }
 
-def prepare_listener(listener_msg):
-    listener_obs = torch.zeros(len(listener_msg), 5)
-    listener_obs[:, :4] = torch.tensor(list(LISTENER_FORWARD_MAPPING.values())[:len(listener_msg)])
-    listener_obs[0:len(listener_msg), 4] = torch.tensor(listener_msg)
-    return listener_obs
+def prepare_listener(listener_obs, shuffle=False):
+    listener_obs_mapped = torch.zeros(len(listener_obs), 5)
+    listener_obs_mapped[:, :4] = torch.tensor(list(LISTENER_FORWARD_MAPPING.values())[:len(listener_obs)])
+    listener_obs_mapped[0:len(listener_obs), 4] = torch.tensor(listener_obs)
+    if shuffle:
+        return listener_obs_mapped[torch.randperm(listener_obs_mapped.size(0))]
+    else:
+        return listener_obs_mapped
 
 
-def prepare_speaker(speaker_msg, vectorizer, filter):
-    r, g, b = speaker_msg[0], speaker_msg[1], speaker_msg[2]
+def prepare_speaker(speaker_obs, vectorizer, filter, shuffle=False):
+    r, g, b = speaker_obs[0], speaker_obs[1], speaker_obs[2]
 
     # Use the extractor to get the structured data, including token_vectors
     token_vectors = vectorizer.process_rgb_to_embeddings(r, g, b)
@@ -78,14 +87,17 @@ def prepare_speaker(speaker_msg, vectorizer, filter):
     num_tokens = len(filtered_vectors)
     embed_dim = vectorizer.model.config.hidden_size
 
-    speaker_obs = torch.zeros(num_tokens, 4 + embed_dim)
+    speaker_obs_mapped = torch.zeros(num_tokens, 4 + embed_dim)
 
     vecs = torch.tensor(np.stack(list(filtered_vectors.values())), dtype=torch.float32)
 
-    speaker_obs[:, :4] = torch.tensor(list(SPEAKER_FORWARD_MAPPING.values())[:num_tokens])
-    speaker_obs[:, 4:] = vecs
+    speaker_obs_mapped[:, :4] = torch.tensor(list(SPEAKER_FORWARD_MAPPING.values())[:num_tokens])
+    speaker_obs_mapped[:, 4:] = vecs
 
-    return speaker_obs
+    if shuffle:
+        return speaker_obs_mapped[torch.randperm(speaker_obs_mapped.size(0))]
+    else:
+        return speaker_obs_mapped
 
 
 def shift_graph(graph, x, y):
