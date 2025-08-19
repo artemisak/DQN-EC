@@ -68,17 +68,17 @@ class Args:
     """the user or org name of the model repository from the Hugging Face Hub"""
 
     # Algorithm specific arguments
-    total_timesteps: int = 80000
+    total_timesteps: int = 10000
     """total timesteps of the experiments"""
-    learning_rate: float = 1e-3
+    learning_rate: float = 5e-4
     """the learning rate of the optimizer"""
     buffer_size: int = 51200
     """the replay memory buffer size"""
     gamma: float = 0.99
     """the discount factor gamma"""
-    tau: float = 0.05
+    tau: float = 0.005
     """the target network update rate"""
-    target_network_frequency: int = 50
+    target_network_frequency: int = 100
     """the timesteps it takes to update the target network"""
     batch_size: int = 256
     """the batch size of sample from the reply memory"""
@@ -88,7 +88,7 @@ class Args:
     """the ending epsilon for exploration"""
     exploration_fraction: float = 0.5
     """the fraction of `total-timesteps` it takes from start-e to go end-e"""
-    learning_starts: int = 5120
+    learning_starts: int = 5000
     """timestep to start learning"""
     train_frequency: int = 5
     """the frequency of training"""
@@ -96,15 +96,15 @@ class Args:
     # GAT specific arguments
     gat_hidden_dim: int = 64
     """hidden dimension for GAT layers"""
-    gat_heads: int = 4
+    gat_heads: int = 3
     """number of attention heads in GAT"""
-    gat_dropout: float = 0.1
+    gat_dropout: float = 0.0
     """dropout rate for GAT layers"""
 
 
 # Base GAT module for processing hypergraphs
 class HypergraphGAT(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim, heads=4, dropout=0.1):
+    def __init__(self, input_dim, hidden_dim, output_dim, heads=4, dropout=0.0):
         super().__init__()
         self.gat1 = GATv2Conv(input_dim, hidden_dim, heads=heads, dropout=dropout, edge_dim=1)
         self.gat2 = GATv2Conv(hidden_dim * heads, hidden_dim, heads=heads, dropout=dropout, edge_dim=1)
@@ -112,6 +112,10 @@ class HypergraphGAT(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, edge_index, edge_attr=None, batch=None):
+
+        if edge_attr is None:
+            edge_attr = x.new_zeros((edge_index.size(1), 1))
+
         # First GAT layer
         x = self.gat1(x, edge_index, edge_attr)
         x = F.elu(x)
@@ -136,7 +140,7 @@ class HypergraphGAT(nn.Module):
 
 # QNetwork for the speaker agent with GAT
 class SpeakerGATQNetwork(nn.Module):
-    def __init__(self, action_dim, gat_hidden_dim=64, gat_heads=4, dropout=0.1):
+    def __init__(self, action_dim, gat_hidden_dim=64, gat_heads=4, dropout=0.0):
         super().__init__()
 
         # GAT for processing hypergraph
@@ -184,7 +188,7 @@ class SpeakerGATQNetwork(nn.Module):
 
 # QNetwork for the listener agent with GAT
 class ListenerGATQNetwork(nn.Module):
-    def __init__(self, action_dim, gat_hidden_dim=64, gat_heads=4, dropout=0.1):
+    def __init__(self, action_dim, gat_hidden_dim=64, gat_heads=4, dropout=0.0):
         super().__init__()
 
         # GAT for processing hypergraph
@@ -234,8 +238,8 @@ class ListenerGATQNetwork(nn.Module):
 def process_observations_to_hypergraph(listener_gae, speaker_gae, observations, speaker_agent, listener_agent, vectorizer, filter, device):
     """Convert raw observations to hypergraph representation"""
     # Process observation
-    listener_obs = prepare_listener(observations[listener_agent][:8]).unsqueeze(0)
-    speaker_obs = prepare_speaker(observations[speaker_agent][:3], vectorizer, filter).unsqueeze(0)
+    listener_obs = prepare_listener(observations[listener_agent][:8]).unsqueeze(0).to(device)
+    speaker_obs = prepare_speaker(observations[speaker_agent][:3], vectorizer, filter).unsqueeze(0).to(device)
 
     with torch.no_grad():
         _, _, graphs = listener_gae(listener_obs)
@@ -247,6 +251,13 @@ def process_observations_to_hypergraph(listener_gae, speaker_gae, observations, 
         sp_graph.x = torch.cat([sp_graph.x, sp_graph.pos, torch.zeros(sp_graph.num_nodes, 1)], dim=1)
 
         hypergraph = prepare_hypergraph([ls_graph, sp_graph])
+
+        x = hypergraph.x
+        x = (x - x.mean(0, keepdim=True)) / (x.std(0, keepdim=True) + 1e-6)
+        hypergraph.x = x
+
+        ea = hypergraph.edge_attr
+        hypergraph.edge_attr = (ea - ea.mean()) / (ea.std() + 1e-6)
 
     return hypergraph
 
@@ -551,7 +562,7 @@ def main():
 
                 current_speaker_q_values = speaker_q_net(current_batch)
                 speaker_q_values = current_speaker_q_values.gather(1, speaker_actions).squeeze(1)
-                speaker_loss = F.mse_loss(speaker_q_values, speaker_targets)
+                speaker_loss = F.smooth_l1_loss(speaker_q_values, speaker_targets)
 
                 speaker_optimizer.zero_grad()
                 speaker_loss.backward()
@@ -568,7 +579,7 @@ def main():
 
                 current_listener_q_values = listener_q_net(current_batch)
                 listener_q_values = current_listener_q_values.gather(1, listener_actions).squeeze(1)
-                listener_loss = F.mse_loss(listener_q_values, listener_targets)
+                listener_loss = F.smooth_l1_loss(listener_q_values, listener_targets)
 
                 listener_optimizer.zero_grad()
                 listener_loss.backward()
