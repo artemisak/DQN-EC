@@ -235,18 +235,23 @@ class ListenerGATQNetwork(nn.Module):
         return self.action_head(graph_features)
 
 
-def process_observations_to_hypergraph(listener_gae, speaker_gae, observations, speaker_agent, listener_agent, vectorizer, filter, device):
+def process_observations_to_hypergraph(env, listener_gae, speaker_gae, observations, speaker_agent, listener_agent, vectorizer, filter, device):
     """Convert raw observations to hypergraph representation"""
     # Process observation
-    listener_obs = prepare_listener(observations[listener_agent][:8]).unsqueeze(0).to(device)
-    speaker_obs = prepare_speaker(observations[speaker_agent][:3], vectorizer, filter).unsqueeze(0).to(device)
+    listener_obs = prepare_listener(observations[listener_agent]).unsqueeze(0).to(device)
+    speaker_obs = prepare_speaker(observations[speaker_agent], vectorizer, filter).unsqueeze(0).to(device)
+
+    # absolute positions (world coordinates)
+    speaker_pos = env.unwrapped.world.agents[0].state.p_pos
+    listener_pos = env.unwrapped.world.agents[1].state.p_pos
 
     with torch.no_grad():
+
         _, _, graphs = listener_gae(listener_obs)
-        ls_graph = shift_graph(graphs[0], x=0, y=0)
+        ls_graph = shift_graph(graphs[0], x=listener_pos[0], y=listener_pos[1])
 
         _, _, graphs = speaker_gae(speaker_obs)
-        sp_graph = shift_graph(graphs[0], x=0, y=0)
+        sp_graph = shift_graph(graphs[0], x=speaker_pos[0], y=speaker_pos[1])
 
         hypergraph = prepare_hypergraph([ls_graph, sp_graph])
 
@@ -386,7 +391,8 @@ def main():
     start_time = time.time()
 
     # Convert initial observations to hypergraph
-    current_hypergraph = process_observations_to_hypergraph(listener_gae,
+    current_hypergraph = process_observations_to_hypergraph(env,
+                                                            listener_gae,
                                                             speaker_gae,
                                                             observations,
                                                             speaker_agent,
@@ -437,7 +443,8 @@ def main():
         next_observations, rewards, terminations, truncations, infos = env.step(actions)
 
         # Convert next observations to hypergraph
-        next_hypergraph = process_observations_to_hypergraph(listener_gae,
+        next_hypergraph = process_observations_to_hypergraph(env,
+                                                             listener_gae,
                                                              speaker_gae,
                                                              next_observations,
                                                              speaker_agent,
@@ -512,7 +519,8 @@ def main():
 
             # Reset environment
             observations, _ = env.reset()
-            current_hypergraph = process_observations_to_hypergraph(listener_gae,
+            current_hypergraph = process_observations_to_hypergraph(env,
+                                                                    listener_gae,
                                                                     speaker_gae,
                                                                     observations,
                                                                     speaker_agent,
