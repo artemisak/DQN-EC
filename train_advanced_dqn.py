@@ -598,7 +598,7 @@ def main():
                         }, step=global_step)
 
             # Log general training metrics
-            if global_step % 100 == 0:
+            if global_step % 10 == 0:
                 if len(episode_rewards) > 0:
                     window_size = min(10, len(episode_rewards))
                     avg_reward = np.mean(episode_rewards[-window_size:])
