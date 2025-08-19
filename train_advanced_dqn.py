@@ -587,7 +587,7 @@ def main():
                 listener_optimizer.step()
 
                 # Log training metrics
-                if global_step % 100 == 0:
+                if global_step % 10 == 0:
                     if args.track:
                         wandb.log({
                             "speaker_loss": speaker_loss.item(),
