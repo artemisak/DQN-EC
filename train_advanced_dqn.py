@@ -462,8 +462,8 @@ def main():
             actions[speaker_agent],
             actions[listener_agent],
             next_hypergraph,
-            rewards[speaker_agent],
-            rewards[listener_agent],
+            np.clip(rewards[speaker_agent], -1, 1),
+            np.clip(rewards[listener_agent], -1, 1),
             done
         )
 
