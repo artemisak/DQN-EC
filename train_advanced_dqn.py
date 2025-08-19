@@ -68,7 +68,7 @@ class Args:
     """the user or org name of the model repository from the Hugging Face Hub"""
 
     # Algorithm specific arguments
-    total_timesteps: int = 80000
+    total_timesteps: int = 10000
     """total timesteps of the experiments"""
     learning_rate: float = 5e-4
     """the learning rate of the optimizer"""
@@ -76,19 +76,19 @@ class Args:
     """the replay memory buffer size"""
     gamma: float = 0.99
     """the discount factor gamma"""
-    tau: float = 0.005
+    tau: float = 0.01
     """the target network update rate"""
     target_network_frequency: int = 100
     """the timesteps it takes to update the target network"""
-    batch_size: int = 256
+    batch_size: int = 128
     """the batch size of sample from the reply memory"""
     start_e: float = 1.0
     """the starting epsilon for exploration"""
     end_e: float = 0.05
     """the ending epsilon for exploration"""
-    exploration_fraction: float = 0.5
+    exploration_fraction: float = 0.1
     """the fraction of `total-timesteps` it takes from start-e to go end-e"""
-    learning_starts: int = 5000
+    learning_starts: int = 1000
     """timestep to start learning"""
     train_frequency: int = 5
     """the frequency of training"""
@@ -111,7 +111,7 @@ class HypergraphGAT(nn.Module):
         self.gat3 = GATv2Conv(hidden_dim * heads, output_dim, heads=1, concat=True, dropout=dropout)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x, edge_index, edge_attr):
+    def forward(self, x, edge_index, edge_attr, batch):
 
         # First GAT layer
         x = self.gat1(x, edge_index, edge_attr)
@@ -127,7 +127,7 @@ class HypergraphGAT(nn.Module):
         x = self.gat3(x, edge_index)
 
         # Global pooling to get graph-level representation
-        x = global_add_pool(x, torch.zeros(x.size(0), dtype=torch.long, device=x.device))
+        x = global_add_pool(x, batch)
 
         return x
 
@@ -171,10 +171,18 @@ class SpeakerGATQNetwork(nn.Module):
     def forward(self, hypergraph):
         # Process hypergraph with GAT
 
+        if hasattr(hypergraph, "batch"):
+            batch_vec = hypergraph.batch
+        else:
+            batch_vec = torch.zeros(
+                hypergraph.x.size(0), dtype=torch.long, device=hypergraph.x.device
+            )
+
         graph_features = self.gat(
             hypergraph.x,
             hypergraph.edge_index,
-            hypergraph.edge_attr
+            hypergraph.edge_attr,
+            batch_vec
         )
 
         # Get Q-values for actions
@@ -221,10 +229,18 @@ class ListenerGATQNetwork(nn.Module):
     def forward(self, hypergraph):
         # Process hypergraph with GAT
 
+        if hasattr(hypergraph, "batch"):
+            batch_vec = hypergraph.batch
+        else:
+            batch_vec = torch.zeros(
+                hypergraph.x.size(0), dtype=torch.long, device=hypergraph.x.device
+            )
+
         graph_features = self.gat(
             hypergraph.x,
             hypergraph.edge_index,
-            hypergraph.edge_attr
+            hypergraph.edge_attr,
+            batch_vec
         )
 
         # Get Q-values for actions
@@ -462,8 +478,8 @@ def main():
             actions[speaker_agent],
             actions[listener_agent],
             next_hypergraph,
-            np.clip(rewards[speaker_agent], -1, 1),
-            np.clip(rewards[listener_agent], -1, 1),
+            np.clip(rewards[speaker_agent], -np.sqrt(2), np.sqrt(2)),
+            np.clip(rewards[listener_agent], -np.sqrt(2), np.sqrt(2)),
             done
         )
 
