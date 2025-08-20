@@ -156,7 +156,8 @@ class SpeakerGATQNetwork(nn.Module):
             nn.Linear(64, action_dim)
         )
 
-        self.alpha = nn.Parameter(torch.tensor(1.0))
+        # self.alpha = nn.Parameter(torch.tensor(1.0))
+        self.alpha = 1.0
         self.skip_connection = nn.Linear(14, 128)
 
         self._init_weights()
@@ -214,7 +215,8 @@ class ListenerGATQNetwork(nn.Module):
             nn.Linear(128, action_dim)
         )
 
-        self.alpha = nn.Parameter(torch.tensor(1.0))
+        # self.alpha = nn.Parameter(torch.tensor(1.0))
+        self.alpha = 1.0
         self.skip_connection = nn.Linear(14, 128)
 
         self._init_weights()
