@@ -24,6 +24,9 @@ class TokenVectorizer:
         self.model.to(self.device)
         self.model.eval()  # Set to evaluation mode
 
+        # Cache for symbol embeddings to avoid recomputation
+        self._symbol_cache = {}
+
     def extract_token_vectors(self, text: str, layer_idx: int = -1) -> Dict[str, np.ndarray]:
         # Tokenize the input
         inputs = self.tokenizer(text, return_tensors="pt").to(self.device)
@@ -113,3 +116,41 @@ class TokenVectorizer:
         # Create the manual RGB tokens with averaged embeddings
         token_vectors = self.create_manual_rgb_tokens(r, g, b)
         return token_vectors
+    
+    def float_to_embedding(self, number: float) -> torch.Tensor:
+        # Convert float to string to get individual symbols
+        number_str = str(number)
+        symbols = list(number_str)  # Split into individual characters
+        
+        # Get embeddings for each symbol
+        symbol_embeddings = []
+        for symbol in symbols:
+            embedding = self.get_symbol_embedding(symbol)
+            symbol_embeddings.append(embedding)
+        
+        # Average all embeddings
+        if symbol_embeddings:
+            averaged_embedding = torch.stack(symbol_embeddings).mean(dim=0)
+        else:
+            # Fallback to zero embedding if no symbols
+            embed_dim = self.model.config.hidden_size
+            averaged_embedding = torch.zeros(embed_dim)
+
+        return averaged_embedding
+
+    def get_symbol_embedding(self, symbol: str) -> torch.Tensor:
+        if symbol in self._symbol_cache:
+            return self._symbol_cache[symbol]
+        
+        # Tokenize the symbol
+        inputs = self.tokenizer(symbol, return_tensors="pt").to(self.device)
+        
+        with torch.no_grad():
+            outputs = self.model(**inputs, output_hidden_states=True)
+            # Use the last hidden layer
+            hidden_states = outputs.hidden_states[-1]
+            # Take the embedding of the first (and likely only) token
+            symbol_embedding = hidden_states[0, 0, :].cpu()  # Remove batch and sequence dims
+        
+        self._symbol_cache[symbol] = symbol_embedding
+        return symbol_embedding

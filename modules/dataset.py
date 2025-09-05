@@ -3,19 +3,21 @@ import os
 from pettingzoo.mpe import simple_speaker_listener_v4
 import torch
 
-from modules.utils import prepare_listener, prepare_speaker
+from modules.utils import prepare_listener, prepare_speaker, prepare_combined_observations
 from modules.vectorizer import TokenVectorizer
 
 
 class SyntheticData:
 
-    def __init__(self, num_samples=1024, batch_size=64, model_name="distilgpt2", data_path="checkpoints/dataset.pt"):
+    def __init__(self, num_samples=1024, batch_size=64, model_name="distilgpt2", data_path="checkpoints/dataset.pt", use_combined=False):
         self.num_samples = num_samples
         self.batch_size = batch_size
         self.data_path = data_path
+        self.use_combined = use_combined
         self.filter = ['red', 'green', 'blue']
         self.listener = []
         self.speaker = []
+        self.combined = []
         self.messages = []
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -36,11 +38,15 @@ class SyntheticData:
                 self.listener.append(prepare_listener(obs['listener_0'], shuffle=True))
                 self.speaker.append(prepare_speaker(obs['speaker_0'], vectorizer=self.vectorizer,
                                                     filter=self.filter, shuffle=True))
+                
+                self.combined.append(prepare_combined_observations(obs['listener_0'], obs['speaker_0'], vectorizer=self.vectorizer, shuffle=True))
+
             env.close()
 
             self.messages = torch.stack(self.messages)
             self.listener = torch.stack(self.listener)
             self.speaker = torch.stack(self.speaker)
+            self.combined = torch.stack(self.combined)
 
             self.save()
 
@@ -56,7 +62,8 @@ class SyntheticData:
         torch.save({
             'listener': self.listener,
             'speaker': self.speaker,
-            'messages': self.messages
+            'messages': self.messages,
+            'combined': self.combined,
         }, self.data_path)
         print(f"Dataset saved to {self.data_path}")
 
@@ -66,3 +73,4 @@ class SyntheticData:
         self.listener = data['listener']
         self.speaker = data['speaker']
         self.messages = data['messages']
+        self.combined = data['combined']

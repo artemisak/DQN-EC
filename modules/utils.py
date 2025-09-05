@@ -57,14 +57,50 @@ SPEAKER_BACKWARD_MAPPING = {
     (0, 0, 1, 1): 3,
 }
 
+GRAY_MAPPING = {
+    1: [0, 0, 0, 0],
+    2: [0, 0, 0, 1],
+    3: [0, 0, 1, 1],
+    4: [0, 0, 1, 0],
+    5: [0, 1, 1, 0],
+    6: [0, 1, 1, 1],
+    7: [0, 1, 0, 1],
+    8: [0, 1, 0, 0],
+    9: [1, 1, 0, 0],
+    10: [1, 1, 0, 1],
+    11: [1, 1, 1, 1],
+    12: [1, 1, 1, 0],
+    13: [1, 0, 1, 0],
+    14: [1, 0, 1, 1],
+}
+
+BACKWARD_GRAY_MAPPING = {
+    (0, 0, 0, 0): 1,
+    (0, 0, 0, 1): 2,
+    (0, 0, 1, 1): 3,
+    (0, 0, 1, 0): 4,
+    (0, 1, 1, 0): 5,
+    (0, 1, 1, 1): 6,
+    (0, 1, 0, 1): 7,
+    (0, 1, 0, 0): 8,
+    (1, 1, 0, 0): 9,
+    (1, 1, 0, 1): 10,
+    (1, 1, 1, 1): 11,
+    (1, 1, 1, 0): 12,
+    (1, 0, 1, 0): 13,
+    (1, 0, 1, 1): 14
+}
+
 def prepare_listener(listener_obs, shuffle=False):
     listener_obs_mapped = torch.zeros(len(listener_obs), 5)
     listener_obs_mapped[:, :4] = torch.tensor(list(LISTENER_FORWARD_MAPPING.values())[:len(listener_obs)])
     listener_obs_mapped[0:len(listener_obs), 4] = torch.tensor(listener_obs)
     if shuffle:
-        return listener_obs_mapped[torch.randperm(listener_obs_mapped.size(0))]
-    else:
-        return listener_obs_mapped
+        listener_obs_mapped = listener_obs_mapped[torch.randperm(listener_obs_mapped.size(0))]
+
+    if listener_obs_mapped.size(0) > 3:
+        listener_obs_mapped = listener_obs_mapped[:-3]
+    return listener_obs_mapped
 
 
 def prepare_speaker(speaker_obs, vectorizer, filter, shuffle=False):
@@ -99,6 +135,45 @@ def prepare_speaker(speaker_obs, vectorizer, filter, shuffle=False):
     else:
         return speaker_obs_mapped
 
+def prepare_combined_observations(listener_obs, speaker_obs, vectorizer, shuffle=False):
+    """
+    New function to prepare combined listener + speaker embeddings using GRAY mapping.
+    Creates a single tensor with 14 rows (11 listener + 3 speaker).
+    """
+
+    embed_dim = vectorizer.model.config.hidden_size
+    combined_embeddings = torch.zeros(14, 4 + embed_dim)
+    
+    # Process listener observations (first 11 rows)
+    listener_count = min(len(listener_obs), 11)
+    for i in range(listener_count):
+        # Get GRAY mapping (1-11)
+        gray_mapping = torch.tensor(GRAY_MAPPING[i + 1], dtype=torch.float32)
+        
+        # Get embedding for this observation
+        embedding = vectorizer.float_to_embedding(listener_obs[i])
+        
+        # Combine mapping + embedding
+        combined_embeddings[i, :4] = gray_mapping
+        combined_embeddings[i, 4:] = embedding
+    
+    # Process speaker observations (last 3 rows)
+    speaker_count = min(len(speaker_obs), 3)
+    for i in range(speaker_count):
+        # Get GRAY mapping for speaker (12-14)
+        gray_mapping = torch.tensor(GRAY_MAPPING[i + 12], dtype=torch.float32)
+        
+        # Get embedding for this observation
+        embedding = vectorizer.float_to_embedding(speaker_obs[i])
+        
+        # Combine mapping + embedding
+        combined_embeddings[11 + i, :4] = gray_mapping
+        combined_embeddings[11 + i, 4:] = embedding
+    
+    if shuffle:
+        return combined_embeddings[torch.randperm(combined_embeddings.size(0))]
+    else:
+        return combined_embeddings
 
 def shift_graph(graph, x, y):
     offset = torch.tensor([x, y], dtype=graph.pos.dtype)
