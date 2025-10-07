@@ -782,21 +782,21 @@ def perform_statistical_comparison(raw_data, df, epoch=30, save_dir="Metrics",
     else:
         print("Outlier filtering: DISABLED")
 
-    # Check if kNN with Gabriel Pruning exists and epoch data is available
-    if 'kNN with Gabriel Pruning' not in raw_data or str(epoch) not in raw_data['kNN with Gabriel Pruning']:
-        print(f"kNN with Gabriel Pruning data not found for epoch {epoch}")
+    # Check if kNN + Gabriel Pruning exists and epoch data is available
+    if 'kNN + Gabriel Pruning' not in raw_data or str(epoch) not in raw_data['kNN + Gabriel Pruning']:
+        print(f"kNN + Gabriel Pruning data not found for epoch {epoch}")
         return
 
-    # Get kNN with Gabriel Pruning's performance at specified epoch
-    knn_gabriel_pruning_epoch_data = df[(df['Algorithm'] == 'kNN with Gabriel Pruning') & (df['Epoch'] == epoch)]
+    # Get kNN + Gabriel Pruning's performance at specified epoch
+    knn_gabriel_pruning_epoch_data = df[(df['Algorithm'] == 'kNN + Gabriel Pruning') & (df['Epoch'] == epoch)]
     if knn_gabriel_pruning_epoch_data.empty:
-        print(f"No kNN with Gabriel Pruning data found for epoch {epoch}")
+        print(f"No kNN + Gabriel Pruning data found for epoch {epoch}")
         return
 
     knn_gabriel_pruning_total_loss = knn_gabriel_pruning_epoch_data['Total Loss Mean'].values[0]
 
     # Find closest competitor based on total loss at specified epoch
-    other_algos_epoch = df[(df['Algorithm'] != 'kNN with Gabriel Pruning') & (df['Epoch'] == epoch)].copy()
+    other_algos_epoch = df[(df['Algorithm'] != 'kNN + Gabriel Pruning') & (df['Epoch'] == epoch)].copy()
     if other_algos_epoch.empty:
         print("No other algorithms found for Metrics")
         return
@@ -810,7 +810,7 @@ def perform_statistical_comparison(raw_data, df, epoch=30, save_dir="Metrics",
           f"{other_algos_epoch[other_algos_epoch['Algorithm'] == closest_competitor]['Total Loss Mean'].values[0]:.6f}")
 
     # Get raw data for both algorithms at specified epoch
-    knn_gabriel_pruning_runs = raw_data['kNN with Gabriel Pruning'][str(epoch)]['runs']
+    knn_gabriel_pruning_runs = raw_data['kNN + Gabriel Pruning'][str(epoch)]['runs']
     competitor_runs = raw_data[closest_competitor][str(epoch)]['runs']
 
     # Extract values for each metric
@@ -822,9 +822,9 @@ def perform_statistical_comparison(raw_data, df, epoch=30, save_dir="Metrics",
     ]
 
     print(f"\n{'=' * 60}")
-    print(f"Permutation Tests: kNN with Gabriel Pruning vs {closest_competitor}")
+    print(f"Permutation Tests: kNN + Gabriel Pruning vs {closest_competitor}")
     print(f"{'=' * 60}")
-    print(f"Number of runs: kNN with Gabriel Pruning={len(knn_gabriel_pruning_runs)}, {closest_competitor}={len(competitor_runs)}")
+    print(f"Number of runs: kNN + Gabriel Pruning={len(knn_gabriel_pruning_runs)}, {closest_competitor}={len(competitor_runs)}")
     print(f"Number of permutations: {n_permutations}")
 
     if len(knn_gabriel_pruning_runs) < 3 or len(competitor_runs) < 3:
@@ -871,12 +871,12 @@ def perform_statistical_comparison(raw_data, df, epoch=30, save_dir="Metrics",
         # Check if we have enough data after filtering
         if filter_outliers and (len(knn_gabriel_pruning_values) < 2 or len(competitor_values) < 2):
             print(f"\nERROR: Too few samples remain after outlier filtering for {metric_name}")
-            print(f"       kNN with Gabriel Pruning: {len(knn_gabriel_pruning_values)}, {closest_competitor}: {len(competitor_values)}")
+            print(f"       kNN + Gabriel Pruning: {len(knn_gabriel_pruning_values)}, {closest_competitor}: {len(competitor_values)}")
             print("       Skipping this metric...")
             continue
 
         # Perform permutation test
-        # Since lower loss is better, we use 'less' to test if kNN with Gabriel Pruning < competitor
+        # Since lower loss is better, we use 'less' to test if kNN + Gabriel Pruning < competitor
         observed_diff, p_value, permuted_diffs = permutation_test(
             knn_gabriel_pruning_values, competitor_values, n_permutations=n_permutations, alternative='two-sided'
         )
@@ -907,17 +907,17 @@ def perform_statistical_comparison(raw_data, df, epoch=30, save_dir="Metrics",
         print(f"\n{metric_name}:")
         if filter_outliers and outlier_summary:
             metric_outliers = outlier_summary[-1]  # Last added entry
-            print(f"  Outliers removed: kNN with Gabriel Pruning={metric_outliers['kNN_with_Gabriel_Pruning_outliers']}, "
+            print(f"  Outliers removed: kNN + Gabriel Pruning={metric_outliers['kNN_with_Gabriel_Pruning_outliers']}, "
                   f"{closest_competitor}={metric_outliers['Competitor_outliers']}")
-        print(f"  kNN with Gabriel Pruning:     mean={knn_gabriel_pruning_mean:.6f}, std={knn_gabriel_pruning_std:.6f}, median={knn_gabriel_pruning_median:.6f}")
+        print(f"  kNN + Gabriel Pruning:     mean={knn_gabriel_pruning_mean:.6f}, std={knn_gabriel_pruning_std:.6f}, median={knn_gabriel_pruning_median:.6f}")
         print(f"  {closest_competitor}: mean={comp_mean:.6f}, std={comp_std:.6f}, median={comp_median:.6f}")
-        print(f"  Observed difference (kNN with Gabriel Pruning - {closest_competitor}): {observed_diff:.6f}")
+        print(f"  Observed difference (kNN + Gabriel Pruning - {closest_competitor}): {observed_diff:.6f}")
         print(f"  Permutation test p-value: {p_value:.4f}")
         print(f"  Cohen's d: {cohen_d:.4f}")
 
         # Interpret results
         if p_value < 0.05:
-            better = "kNN with Gabriel Pruning" if observed_diff < 0 else closest_competitor
+            better = "kNN + Gabriel Pruning" if observed_diff < 0 else closest_competitor
             print(f"  Result: Statistically significant difference (p < 0.05)")
             print(f"          {better} performs significantly better")
         else:
@@ -951,7 +951,7 @@ def perform_statistical_comparison(raw_data, df, epoch=30, save_dir="Metrics",
         # Boxplot
         ax1 = plt.subplot(4, 3, idx * 3 + 1)
         bp = ax1.boxplot([knn_gabriel_pruning_values, competitor_values],
-                         tick_labels=['kNN with Gabriel Pruning', closest_competitor],
+                         tick_labels=['kNN + Gabriel Pruning', closest_competitor],
                          patch_artist=True, showmeans=True,
                          meanprops=dict(marker='D', markerfacecolor='red', markersize=8))
         bp['boxes'][0].set_facecolor('lightblue')
@@ -1007,7 +1007,7 @@ def perform_statistical_comparison(raw_data, df, epoch=30, save_dir="Metrics",
         ax3.grid(True, alpha=0.3)
 
     filter_text = f" (Outliers Filtered, IQR×{iqr_multiplier})" if filter_outliers else ""
-    plt.suptitle(f'Statistical Metrics: kNN with Gabriel Pruning vs {closest_competitor} at Epoch {epoch}\n'
+    plt.suptitle(f'Statistical Metrics: kNN + Gabriel Pruning vs {closest_competitor} at Epoch {epoch}\n'
                  f'Permutation Test with {n_permutations} permutations{filter_text}', fontsize=14)
     plt.tight_layout()
     filter_suffix = "_filtered" if filter_outliers else ""
@@ -1045,5 +1045,5 @@ def perform_statistical_comparison(raw_data, df, epoch=30, save_dir="Metrics",
 
         total_knn_gabriel_pruning_removed = sum(row['kNN_with_Gabriel_Pruning_outliers'] for row in outlier_summary)
         total_comp_removed = sum(row['Competitor_outliers'] for row in outlier_summary)
-        print(f"\nTotal outliers removed: kNN with Gabriel Pruning={total_knn_gabriel_pruning_removed}, {closest_competitor}={total_comp_removed}")
+        print(f"\nTotal outliers removed: kNN + Gabriel Pruning={total_knn_gabriel_pruning_removed}, {closest_competitor}={total_comp_removed}")
         print(f"IQR multiplier used: {iqr_multiplier} (lower = more aggressive filtering)")
