@@ -1,3 +1,0 @@
-from train_toy_models import load_and_visualize
-
-load_and_visualize()
