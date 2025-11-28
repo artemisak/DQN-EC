@@ -257,4 +257,4 @@ def load_and_visualize():
 
 if __name__ == "__main__":
     # Train agents
-    trained_agents = train(num_episodes=4000, max_steps=25)
+    trained_agents = train(num_episodes=1000, max_steps=25)
