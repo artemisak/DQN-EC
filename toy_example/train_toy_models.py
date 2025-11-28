@@ -195,66 +195,6 @@ def train(num_episodes=1000, max_steps=25):
     return agents
 
 
-def visualize(agents, num_episodes=1, max_steps=25):
-    """Visualize trained agents"""
-    env = simple_speaker_listener_v4.parallel_env(
-        max_cycles=max_steps,
-        continuous_actions=False,
-        render_mode="human"
-    )
-
-    print("\nVisualizing trained agents...")
-
-    for episode in range(num_episodes):
-        observations, infos = env.reset(seed=SEED + episode + 3)
-        episode_reward = {agent: 0 for agent in env.possible_agents}
-
-        for step in range(max_steps):
-            actions = {}
-            for agent_name in env.agents:
-                actions[agent_name] = agents[agent_name].select_action(
-                    observations[agent_name],
-                    training=False
-                )
-
-            next_observations, rewards, terminations, truncations, infos = env.step(actions)
-
-            for agent_name in env.agents:
-                episode_reward[agent_name] += rewards[agent_name]
-
-            observations = next_observations
-
-            if not env.agents:
-                break
-
-        total_reward = sum(episode_reward.values())
-        print(f"Episode {episode + 1} | Total Reward: {total_reward:.2f} | "
-              f"Speaker: {episode_reward['speaker_0']:.2f} | "
-              f"Listener: {episode_reward['listener_0']:.2f}")
-
-    env.close()
-
-
-def load_and_visualize():
-    """Load saved models and visualize"""
-    env = simple_speaker_listener_v4.parallel_env(max_cycles=25, continuous_actions=False)
-
-    # Initialize agents and load weights
-    agents = {}
-    for agent_name in env.possible_agents:
-        obs_space = env.observation_space(agent_name)
-        act_space = env.action_space(agent_name)
-        agents[agent_name] = DoubleDQNAgent(obs_space.shape[0], act_space.n)
-        agents[agent_name].q_network.load_state_dict(
-            torch.load(f"models/{agent_name}_ddqn.pth", weights_only=True)
-        )
-        agents[agent_name].epsilon = 0.0  # No exploration
-
-    env.close()
-
-    visualize(agents)
-
-
 if __name__ == "__main__":
     # Train agents
     trained_agents = train(num_episodes=1000, max_steps=25)
