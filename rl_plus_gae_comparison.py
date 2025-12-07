@@ -5,18 +5,13 @@ import numpy as np
 from matplotlib.ticker import FuncFormatter
 from matplotlib.backends.backend_pdf import PdfPages
 
-# -------------------------
-# Load CSVs
-# -------------------------
+
 methods = {
     "Double DQN + Communication": pd.read_csv("./runs/run_20250714_155357/Double DQN + Communication.csv"),
     "Double DQN": pd.read_csv("./runs/run_20250714_155357/Double DQN.csv"),
     "DQN": pd.read_csv("./runs/run_20250714_155357/DQN.csv"),
 }
 
-# -------------------------
-# Metrics of interest
-# -------------------------
 metrics = [
     "listener_loss",
     "speaker_loss",
@@ -41,24 +36,15 @@ SMOOTH_WINDOW = 10
 def smooth_series(series, window=SMOOTH_WINDOW):
     return series.rolling(window=window, min_periods=1).mean()
 
-# -------------------------
-# Custom x-axis formatter
-# -------------------------
 def custom_comma_formatter(x, pos):
     if abs(x) >= 10000:
         return f"{int(x):,}"
     else:
         return f"{int(x)}"
 
-# -------------------------
-# Sort DataFrames
-# -------------------------
 for name in methods:
     methods[name] = methods[name].sort_values("global_step").reset_index(drop=True)
 
-# -------------------------
-# Plotting
-# -------------------------
 with PdfPages("./rl_metrics-no-title.pdf") as pdf:
     fig, axes = plt.subplots(1, len(metrics), figsize=(6*len(metrics), 6), sharex=False)
     if len(metrics) == 1:
@@ -111,5 +97,3 @@ with PdfPages("./rl_metrics-no-title.pdf") as pdf:
     plt.tight_layout(rect=[0, 0.07, 1, 0.96])
     pdf.savefig(fig, dpi=800, bbox_inches="tight")
     plt.close(fig)
-
-print("✅ Saved PDF: results/all_metrics_comparison_one_row.pdf (titles above, legends inside, labels below)")
