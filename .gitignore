@@ -179,3 +179,5 @@ wandb/
 .DS_Store
 
 .runs/run_20250714_155357/rl_runs.csv
+runs/run_20250714_155357/rl_runs.csv
+wandb_csv.py
