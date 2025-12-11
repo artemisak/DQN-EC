@@ -129,5 +129,10 @@ def update(frame):
 # Create animation
 anim = animation.FuncAnimation(fig, update, frames=n_steps, interval=200, repeat=False)
 
+# Save as GIF
+print("Saving animation as GIF... This may take a moment.")
+anim.save('graph_evolution.gif', writer='pillow', fps=5, dpi=100)
+print("Animation saved as 'graph_evolution.gif'!")
+
 plt.tight_layout()
-plt.show()
+# plt.show()  # Commented out - uncomment if you want to display it as well
